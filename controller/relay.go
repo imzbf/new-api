@@ -125,7 +125,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 	needSensitiveCheck := setting.ShouldCheckPromptSensitive()
 	needCountToken := constant.CountToken
-	// Avoid building huge CombineText (strings.Join) when token counting and sensitive check are both disabled.
+	// Avoid building huge CombineText (strings.Join) when token counting and
+	// legacy sensitive check are both disabled.
 	var meta *types.TokenCountMeta
 	if needSensitiveCheck || needCountToken {
 		meta = request.GetTokenCountMeta()
@@ -137,8 +138,33 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		contains, words := service.CheckSensitiveText(meta.CombineText)
 		if contains {
 			logger.LogWarn(c, fmt.Sprintf("user sensitive words detected: %s", strings.Join(words, ", ")))
-			newAPIError = types.NewError(err, types.ErrorCodeSensitiveWordsDetected)
+			newAPIError = types.NewError(errors.New("sensitive words detected"), types.ErrorCodeSensitiveWordsDetected)
 			return
+		}
+	}
+
+	if setting.ShouldReplacePromptSensitive() {
+		replacement, replaceErr := service.ApplySensitiveReplacementsToRequest(request)
+		if replaceErr != nil {
+			newAPIError = types.NewError(replaceErr, types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+			return
+		}
+		if replacement.Changed {
+			if bodyErr := service.RewriteSensitiveReplacementRequestBody(c); bodyErr != nil {
+				newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+				return
+			}
+			words := service.SensitiveReplacementWords(replacement.Matches)
+			logger.LogWarn(c, fmt.Sprintf("user sensitive words replaced: %s", strings.Join(words, ", ")))
+			service.RecordSensitiveReplacementLogs(c, relayInfo.OriginModelName, replacement.Matches)
+
+			// Replacement mutates request DTO text fields before billing; reset
+			// token metadata so charging and channel selection use sanitized text.
+			if needCountToken {
+				meta = request.GetTokenCountMeta()
+			} else {
+				meta = fastTokenCountMetaForPricing(request)
+			}
 		}
 	}
 

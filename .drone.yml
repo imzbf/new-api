@@ -1,0 +1,34 @@
+kind: pipeline
+type: docker
+name: new-api-deploy
+
+trigger:
+  branch:
+    - main
+
+steps:
+  - name: build-local-image
+    image: node:24.14.0-slim
+    volumes:
+      - name: docker-sock
+        path: /var/run/docker.sock
+      - name: docker-bin
+        path: /usr/bin/docker
+      - name: docker-compose-plugin
+        path: /usr/libexec/docker/cli-plugins/docker-compose
+    commands:
+      # The project Dockerfile already builds both frontends and the Go backend.
+      # Keep the tag aligned with docker-compose.yml so compose uses this local image.
+      - docker build -t new-api:local .
+      - docker image prune -f
+
+volumes:
+  - name: docker-sock
+    host:
+      path: /var/run/docker.sock
+  - name: docker-bin
+    host:
+      path: /usr/bin/docker
+  - name: docker-compose-plugin
+    host:
+      path: /usr/libexec/docker/cli-plugins/docker-compose

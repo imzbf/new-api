@@ -36,6 +36,38 @@ import {
 // Form Validation Schema
 // ============================================================================
 
+export type ChannelConnectionConfig = {
+  key: string
+  url: string
+}
+
+export const CHANNEL_CONNECTION_CLIPBOARD_TYPE = 'newapi_channel_conn'
+
+export function parseChannelConnectionString(
+  text: string | undefined
+): ChannelConnectionConfig | null {
+  if (!text?.trim()) return null
+
+  try {
+    const parsed: unknown = JSON.parse(text.trim())
+    if (!isJsonObjectValue(parsed)) return null
+
+    // Keep this in sync with the API-key "Copy Connection Info" action so
+    // connection snippets can move between classic and default UI versions.
+    if (
+      parsed._type === CHANNEL_CONNECTION_CLIPBOARD_TYPE &&
+      typeof parsed.key === 'string' &&
+      typeof parsed.url === 'string'
+    ) {
+      return { key: parsed.key, url: parsed.url }
+    }
+  } catch {
+    // Clipboard text is often arbitrary user data; invalid JSON just means no match.
+  }
+
+  return null
+}
+
 function parseOptionalJson(value: string | undefined): unknown {
   if (!value?.trim()) return undefined
   return JSON.parse(value)
@@ -563,13 +595,18 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
       formData.allow_include_obfuscation === true
     settingsObj.allow_inference_geo = formData.allow_inference_geo === true
   } else {
-    if ('disable_store' in settingsObj) delete settingsObj.disable_store
-    if ('allow_safety_identifier' in settingsObj)
+    if ('disable_store' in settingsObj) {
+      delete settingsObj.disable_store
+    }
+    if ('allow_safety_identifier' in settingsObj) {
       delete settingsObj.allow_safety_identifier
-    if ('allow_include_obfuscation' in settingsObj)
+    }
+    if ('allow_include_obfuscation' in settingsObj) {
       delete settingsObj.allow_include_obfuscation
-    if (formData.type !== 14 && 'allow_inference_geo' in settingsObj)
+    }
+    if (formData.type !== 14 && 'allow_inference_geo' in settingsObj) {
       delete settingsObj.allow_inference_geo
+    }
   }
 
   // Anthropic (type 14): claude_beta_query, allow_inference_geo, allow_speed
@@ -578,8 +615,12 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     settingsObj.allow_speed = formData.allow_speed === true
     settingsObj.claude_beta_query = formData.claude_beta_query === true
   } else {
-    if ('allow_speed' in settingsObj) delete settingsObj.allow_speed
-    if ('claude_beta_query' in settingsObj) delete settingsObj.claude_beta_query
+    if ('allow_speed' in settingsObj) {
+      delete settingsObj.allow_speed
+    }
+    if ('claude_beta_query' in settingsObj) {
+      delete settingsObj.claude_beta_query
+    }
   }
 
   settingsObj.disable_task_polling_sleep =
@@ -592,14 +633,14 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     settingsObj.upstream_model_update_auto_sync_enabled =
       settingsObj.upstream_model_update_check_enabled === true &&
       formData.upstream_model_update_auto_sync_enabled === true
-    settingsObj.upstream_model_update_ignored_models = Array.from(
-      new Set(
+    settingsObj.upstream_model_update_ignored_models = [
+      ...new Set(
         String(formData.upstream_model_update_ignored_models || '')
           .split(',')
           .map((model) => model.trim())
           .filter(Boolean)
-      )
-    )
+      ),
+    ]
     if (
       !Array.isArray(settingsObj.upstream_model_update_last_detected_models) ||
       settingsObj.upstream_model_update_check_enabled !== true

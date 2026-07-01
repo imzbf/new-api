@@ -22,6 +22,9 @@ import type {
   ConfirmPaymentComplianceResponse,
   FetchUpstreamRatiosRequest,
   LogCleanupTask,
+  SensitiveReplacementLogCleanupTask,
+  SensitiveReplacementLogsResponse,
+  SystemTask,
   SystemOptionsResponse,
   SystemTaskListResponse,
   SystemTaskResponse,
@@ -38,6 +41,17 @@ export async function getSystemOptions() {
 
 export async function updateSystemOption(request: UpdateOptionRequest) {
   const res = await api.put<UpdateOptionResponse>('/api/option/', request)
+  return res.data
+}
+
+export async function getSensitiveReplacementLogs(params: {
+  p: number
+  page_size: number
+}) {
+  const res = await api.get<SensitiveReplacementLogsResponse>(
+    '/api/sensitive-replacement/logs',
+    { params }
+  )
   return res.data
 }
 
@@ -60,6 +74,17 @@ export async function startLogCleanupTask(targetTimestamp: number) {
   return res.data
 }
 
+export async function startSensitiveReplacementLogCleanupTask(
+  targetTimestamp: number
+) {
+  const res = await api.post<
+    SystemTaskResponse<SensitiveReplacementLogCleanupTask>
+  >('/api/system-task/sensitive-replacement-log-cleanup', null, {
+    params: { target_timestamp: targetTimestamp },
+  })
+  return res.data
+}
+
 export async function getCurrentLogCleanupTask() {
   const res = await api.get<SystemTaskResponse<LogCleanupTask | null>>(
     '/api/system-task/current',
@@ -70,8 +95,19 @@ export async function getCurrentLogCleanupTask() {
   return res.data
 }
 
-export async function getSystemTask(taskId: string) {
-  const res = await api.get<SystemTaskResponse<LogCleanupTask>>(
+export async function getCurrentSensitiveReplacementLogCleanupTask() {
+  const res = await api.get<
+    SystemTaskResponse<SensitiveReplacementLogCleanupTask | null>
+  >('/api/system-task/current', {
+    params: { type: 'sensitive_replacement_log_cleanup' },
+  })
+  return res.data
+}
+
+export async function getSystemTask<TTask extends SystemTask = LogCleanupTask>(
+  taskId: string
+) {
+  const res = await api.get<SystemTaskResponse<TTask>>(
     `/api/system-task/${taskId}`
   )
   return res.data

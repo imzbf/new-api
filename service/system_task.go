@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting"
 
 	"github.com/bytedance/gopkg/util/gopool"
 )
@@ -17,9 +18,11 @@ import (
 const (
 	// systemTaskRunnerIdleInterval is the fallback poll interval used to pick up
 	// tasks created on other nodes and mark expired leases failed.
-	systemTaskRunnerIdleInterval = 15 * time.Second
-	systemTaskLockTTL            = 60 * time.Second
-	logCleanupBatchSize          = 100
+	systemTaskRunnerIdleInterval            = 15 * time.Second
+	systemTaskLockTTL                       = 60 * time.Second
+	logCleanupBatchSize                     = 100
+	sensitiveReplacementLogCleanupBatchSize = 100
+	sensitiveReplacementLogCleanupInterval  = 24 * time.Hour
 
 	// systemTaskSchedulerInterval throttles how often the scheduler/stale-lock
 	// pass runs, independent of how often the runner wakes to claim tasks.
@@ -83,8 +86,37 @@ func (logCleanupHandler) Run(ctx context.Context, task *model.SystemTask, runner
 	runLogCleanupTask(ctx, task, runnerID)
 }
 
+// sensitiveReplacementLogCleanupHandler supports both manual cleanup and the
+// scheduled retention pass. It intentionally shares the log-cleanup progress
+// shape so the existing system-task UI can render it without a special case.
+type sensitiveReplacementLogCleanupHandler struct{}
+
+func (sensitiveReplacementLogCleanupHandler) Type() string {
+	return model.SystemTaskTypeSensitiveReplacementLogCleanup
+}
+
+func (sensitiveReplacementLogCleanupHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	runSensitiveReplacementLogCleanupTask(ctx, task, runnerID)
+}
+
+func (sensitiveReplacementLogCleanupHandler) Enabled() bool {
+	return setting.SensitiveReplacementLogRetentionDays > 0
+}
+
+func (sensitiveReplacementLogCleanupHandler) Interval() time.Duration {
+	return sensitiveReplacementLogCleanupInterval
+}
+
+func (sensitiveReplacementLogCleanupHandler) NewPayload() any {
+	return SensitiveReplacementLogCleanupPayload{
+		TargetTimestamp: sensitiveReplacementLogRetentionCutoffTimestamp(),
+		BatchSize:       sensitiveReplacementLogCleanupBatchSize,
+	}
+}
+
 func init() {
 	RegisterSystemTaskHandler(logCleanupHandler{})
+	RegisterSystemTaskHandler(sensitiveReplacementLogCleanupHandler{})
 }
 
 type LogCleanupPayload struct {
@@ -102,6 +134,10 @@ type LogCleanupState struct {
 type LogCleanupResult struct {
 	DeletedCount int64 `json:"deleted_count"`
 }
+
+type SensitiveReplacementLogCleanupPayload = LogCleanupPayload
+type SensitiveReplacementLogCleanupState = LogCleanupState
+type SensitiveReplacementLogCleanupResult = LogCleanupResult
 
 var (
 	systemTaskRunnerOnce sync.Once
@@ -186,6 +222,36 @@ func StartLogCleanupTask(targetTimestamp int64) (*model.SystemTask, error) {
 	task, err := model.CreateSystemTask(model.SystemTaskTypeLogCleanup, payload, state)
 	if err != nil {
 		activeTask, activeErr := model.GetActiveSystemTask(model.SystemTaskTypeLogCleanup)
+		if activeErr == nil && activeTask != nil {
+			return activeTask, nil
+		}
+		return nil, err
+	}
+	notifySystemTaskRunner()
+	return task, nil
+}
+
+func StartSensitiveReplacementLogCleanupTask(targetTimestamp int64) (*model.SystemTask, error) {
+	if targetTimestamp <= 0 {
+		return nil, errors.New("target timestamp is required")
+	}
+
+	activeTask, err := model.GetActiveSystemTask(model.SystemTaskTypeSensitiveReplacementLogCleanup)
+	if err != nil {
+		return nil, err
+	}
+	if activeTask != nil {
+		return activeTask, nil
+	}
+
+	payload := SensitiveReplacementLogCleanupPayload{
+		TargetTimestamp: targetTimestamp,
+		BatchSize:       sensitiveReplacementLogCleanupBatchSize,
+	}
+	state := SensitiveReplacementLogCleanupState{}
+	task, err := model.CreateSystemTask(model.SystemTaskTypeSensitiveReplacementLogCleanup, payload, state)
+	if err != nil {
+		activeTask, activeErr := model.GetActiveSystemTask(model.SystemTaskTypeSensitiveReplacementLogCleanup)
 		if activeErr == nil && activeTask != nil {
 			return activeTask, nil
 		}
@@ -425,6 +491,92 @@ func runLogCleanupTask(ctx context.Context, task *model.SystemTask, runnerID str
 	}
 }
 
+func runSensitiveReplacementLogCleanupTask(ctx context.Context, task *model.SystemTask, runnerID string) {
+	payload := SensitiveReplacementLogCleanupPayload{}
+	if err := task.DecodePayload(&payload); err != nil {
+		failSystemTask(task, runnerID, err)
+		return
+	}
+	if payload.TargetTimestamp <= 0 {
+		failSystemTask(task, runnerID, errors.New("target timestamp is required"))
+		return
+	}
+	if payload.BatchSize <= 0 {
+		payload.BatchSize = sensitiveReplacementLogCleanupBatchSize
+	}
+
+	state := SensitiveReplacementLogCleanupState{}
+	if err := task.DecodeState(&state); err != nil {
+		failSystemTask(task, runnerID, err)
+		return
+	}
+
+	for {
+		remaining, err := model.CountOldSensitiveReplacementLogs(ctx, payload.TargetTimestamp)
+		if err != nil {
+			failSystemTask(task, runnerID, err)
+			return
+		}
+		syncLogCleanupStateFromRemaining(&state, remaining)
+		if err := model.UpdateSystemTaskState(task.TaskID, runnerID, state); err != nil {
+			logSystemTaskLockError(ctx, task, err)
+			return
+		}
+		if state.Remaining == 0 {
+			break
+		}
+
+		progressed := false
+		for state.Remaining > 0 {
+			rowsAffected, err := model.DeleteOldSensitiveReplacementLogBatch(ctx, payload.TargetTimestamp, payload.BatchSize)
+			if err != nil {
+				failSystemTask(task, runnerID, err)
+				return
+			}
+			if rowsAffected == 0 {
+				break
+			}
+			progressed = true
+
+			state.Processed += rowsAffected
+			if state.Total < state.Processed {
+				state.Total = state.Processed
+			}
+			if state.Remaining > rowsAffected {
+				state.Remaining -= rowsAffected
+			} else {
+				state.Remaining = 0
+			}
+			state.Progress = logCleanupProgress(state.Processed, state.Total)
+
+			if err := model.UpdateSystemTaskState(task.TaskID, runnerID, state); err != nil {
+				logSystemTaskLockError(ctx, task, err)
+				return
+			}
+		}
+
+		if !progressed {
+			failSystemTask(task, runnerID, errors.New("no sensitive replacement log rows were deleted"))
+			return
+		}
+	}
+
+	state.Remaining = 0
+	state.Progress = 100
+	if state.Total < state.Processed {
+		state.Total = state.Processed
+	}
+	if err := model.UpdateSystemTaskState(task.TaskID, runnerID, state); err != nil {
+		logSystemTaskLockError(ctx, task, err)
+		return
+	}
+
+	result := SensitiveReplacementLogCleanupResult{DeletedCount: state.Processed}
+	if err := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusSucceeded, result, ""); err != nil {
+		logSystemTaskLockError(ctx, task, err)
+	}
+}
+
 func syncLogCleanupStateFromRemaining(state *LogCleanupState, remaining int64) {
 	if state.Total <= 0 {
 		state.Total = remaining
@@ -453,6 +605,10 @@ func logCleanupProgress(processed int64, total int64) int {
 		return 100
 	}
 	return int(processed * 100 / total)
+}
+
+func sensitiveReplacementLogRetentionCutoffTimestamp() int64 {
+	return common.GetTimestamp() - int64(setting.SensitiveReplacementLogRetentionDays)*int64((24*time.Hour)/time.Second)
 }
 
 func systemTaskLockUntil() int64 {

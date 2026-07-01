@@ -39,6 +39,36 @@ export type UpdateOptionResponse = {
   message: string
 }
 
+export type SensitiveReplacementLog = {
+  id: number
+  created_at: number
+  user_id: number
+  username: string
+  token_id: number
+  token_name: string
+  model_name: string
+  request_path: string
+  request_id: string
+  matched_word: string
+  replacement: string
+  count: number
+  original_context: string
+  replaced_context: string
+}
+
+export type SensitiveReplacementLogPage = {
+  page: number
+  page_size: number
+  total: number
+  items: SensitiveReplacementLog[]
+}
+
+export type SensitiveReplacementLogsResponse = {
+  success: boolean
+  message: string
+  data: SensitiveReplacementLogPage
+}
+
 export type ConfirmPaymentComplianceResponse = {
   success: boolean
   message: string
@@ -89,6 +119,12 @@ export type LogCleanupTaskResult = {
 }
 
 export type LogCleanupTask = SystemTask<
+  LogCleanupTaskPayload,
+  LogCleanupTaskState,
+  LogCleanupTaskResult
+>
+
+export type SensitiveReplacementLogCleanupTask = SystemTask<
   LogCleanupTaskPayload,
   LogCleanupTaskState,
   LogCleanupTaskResult
@@ -370,6 +406,9 @@ export type SecuritySettings = {
   CheckSensitiveEnabled: boolean
   CheckSensitiveOnPromptEnabled: boolean
   SensitiveWords: string
+  SensitiveReplacementEnabled: boolean
+  SensitiveReplacementRules: string
+  SensitiveReplacementLogRetentionDays: number
   'fetch_setting.enable_ssrf_protection': boolean
   'fetch_setting.allow_private_ip': boolean
   'fetch_setting.domain_filter_mode': boolean

@@ -169,6 +169,9 @@ func InitOptionMap() {
 	common.OptionMap["ModelRequestRateLimitEnabled"] = strconv.FormatBool(setting.ModelRequestRateLimitEnabled)
 	common.OptionMap["CheckSensitiveOnPromptEnabled"] = strconv.FormatBool(setting.CheckSensitiveOnPromptEnabled)
 	common.OptionMap["StopOnSensitiveEnabled"] = strconv.FormatBool(setting.StopOnSensitiveEnabled)
+	common.OptionMap["SensitiveReplacementEnabled"] = strconv.FormatBool(setting.SensitiveReplacementEnabled)
+	common.OptionMap["SensitiveReplacementRules"] = setting.SensitiveReplacementRulesToString()
+	common.OptionMap["SensitiveReplacementLogRetentionDays"] = strconv.Itoa(setting.SensitiveReplacementLogRetentionDays)
 	common.OptionMap["SensitiveWords"] = setting.SensitiveWordsToString()
 	common.OptionMap["StreamCacheQueueLength"] = strconv.Itoa(setting.StreamCacheQueueLength)
 	common.OptionMap["AutomaticDisableKeywords"] = operation_setting.AutomaticDisableKeywordsToString()
@@ -350,6 +353,8 @@ func updateOptionMap(key string, value string) (err error) {
 			setting.ModelRequestRateLimitEnabled = boolValue
 		case "StopOnSensitiveEnabled":
 			setting.StopOnSensitiveEnabled = boolValue
+		case "SensitiveReplacementEnabled":
+			setting.SensitiveReplacementEnabled = boolValue
 		case "SMTPSSLEnabled":
 			common.SMTPSSLEnabled = boolValue
 		case "SMTPStartTLSEnabled":
@@ -558,6 +563,14 @@ func updateOptionMap(key string, value string) (err error) {
 		common.QuotaPerUnit, _ = strconv.ParseFloat(value, 64)
 	case "SensitiveWords":
 		setting.SensitiveWordsFromString(value)
+	case "SensitiveReplacementRules":
+		setting.SensitiveReplacementRulesFromString(value)
+	case "SensitiveReplacementLogRetentionDays":
+		days, _ := strconv.Atoi(value)
+		if days < 0 {
+			days = 0
+		}
+		setting.SensitiveReplacementLogRetentionDays = days
 	case "AutomaticDisableKeywords":
 		operation_setting.AutomaticDisableKeywordsFromString(value)
 	case "AutomaticDisableStatusCodes":

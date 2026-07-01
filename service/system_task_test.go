@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -231,4 +232,92 @@ func TestEnqueueSystemTaskReportsCreatedAndExistingActive(t *testing.T) {
 	require.True(t, created)
 	require.NotNil(t, second)
 	assert.NotEqual(t, first.TaskID, second.TaskID)
+}
+
+func TestStartSensitiveReplacementLogCleanupTaskValidatesAndDedups(t *testing.T) {
+	truncate(t)
+
+	_, err := StartSensitiveReplacementLogCleanupTask(0)
+	require.Error(t, err)
+
+	first, err := StartSensitiveReplacementLogCleanupTask(1000)
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	assert.Equal(t, model.SystemTaskTypeSensitiveReplacementLogCleanup, first.Type)
+
+	second, err := StartSensitiveReplacementLogCleanupTask(2000)
+	require.NoError(t, err)
+	require.NotNil(t, second)
+	assert.Equal(t, first.TaskID, second.TaskID)
+	assert.Equal(t, int64(1), countSystemTasks(t, model.SystemTaskTypeSensitiveReplacementLogCleanup))
+}
+
+func TestSensitiveReplacementLogCleanupTaskDeletesAndFinishes(t *testing.T) {
+	truncate(t)
+
+	require.NoError(t, model.RecordSensitiveReplacementLogs([]*model.SensitiveReplacementLog{
+		{CreatedAt: 100, RequestId: "old-1", MatchedWord: "secret", Replacement: "MASK", Count: 1},
+		{CreatedAt: 200, RequestId: "old-2", MatchedWord: "secret", Replacement: "MASK", Count: 1},
+		{CreatedAt: 300, RequestId: "new", MatchedWord: "secret", Replacement: "MASK", Count: 1},
+	}))
+
+	task, err := model.CreateSystemTask(
+		model.SystemTaskTypeSensitiveReplacementLogCleanup,
+		SensitiveReplacementLogCleanupPayload{TargetTimestamp: 250, BatchSize: 1},
+		SensitiveReplacementLogCleanupState{},
+	)
+	require.NoError(t, err)
+
+	claimedTask, claimed, err := model.ClaimSystemTask(task.ID, task.Type, "runner-cleanup", common.GetTimestamp()+60)
+	require.NoError(t, err)
+	require.True(t, claimed)
+
+	runSensitiveReplacementLogCleanupTask(context.Background(), claimedTask, "runner-cleanup")
+
+	reloaded, err := model.GetSystemTaskByTaskID(task.TaskID)
+	require.NoError(t, err)
+	require.NotNil(t, reloaded)
+	assert.Equal(t, model.SystemTaskStatusSucceeded, reloaded.Status)
+
+	var result SensitiveReplacementLogCleanupResult
+	require.NoError(t, common.UnmarshalJsonStr(reloaded.Result, &result))
+	assert.Equal(t, int64(2), result.DeletedCount)
+
+	remaining, total, err := model.GetSensitiveReplacementLogs(0, 10)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	require.Len(t, remaining, 1)
+	assert.Equal(t, "new", remaining[0].RequestId)
+}
+
+func TestSensitiveReplacementLogCleanupSchedulerUsesRetentionDays(t *testing.T) {
+	truncate(t)
+
+	oldRetentionDays := setting.SensitiveReplacementLogRetentionDays
+	t.Cleanup(func() {
+		setting.SensitiveReplacementLogRetentionDays = oldRetentionDays
+	})
+
+	handler := sensitiveReplacementLogCleanupHandler{}
+	withSystemTaskRegistry(t, handler)
+
+	setting.SensitiveReplacementLogRetentionDays = 0
+	runSystemTaskScheduler()
+	assert.Equal(t, int64(0), countSystemTasks(t, model.SystemTaskTypeSensitiveReplacementLogCleanup))
+
+	setting.SensitiveReplacementLogRetentionDays = 30
+	before := common.GetTimestamp()
+	runSystemTaskScheduler()
+	after := common.GetTimestamp()
+
+	assert.Equal(t, int64(1), countSystemTasks(t, model.SystemTaskTypeSensitiveReplacementLogCleanup))
+	latest, err := model.GetLatestSystemTask(model.SystemTaskTypeSensitiveReplacementLogCleanup)
+	require.NoError(t, err)
+	require.NotNil(t, latest)
+
+	var payload SensitiveReplacementLogCleanupPayload
+	require.NoError(t, latest.DecodePayload(&payload))
+	assert.Equal(t, sensitiveReplacementLogCleanupBatchSize, payload.BatchSize)
+	assert.GreaterOrEqual(t, payload.TargetTimestamp, before-int64((30*24*time.Hour)/time.Second))
+	assert.LessOrEqual(t, payload.TargetTimestamp, after-int64((30*24*time.Hour)/time.Second))
 }
