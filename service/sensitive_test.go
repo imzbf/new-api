@@ -3,6 +3,7 @@ package service
 import (
 	"mime/multipart"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -45,16 +46,38 @@ func TestLegacySensitiveWordsStillBlock(t *testing.T) {
 func TestParseSensitiveReplacementRules(t *testing.T) {
 	rules := ParseSensitiveReplacementRules([]string{
 		"",
+		"# comment",
 		"色情=>净化",
+		"  // another comment  ",
 		"av",
 		"AV=>YY",
 		"empty=>",
+		"bad=>MASK # note",
+		"url=>https://example.com//keep",
 	})
 
-	require.Len(t, rules, 3)
+	require.Len(t, rules, 5)
 	assert.Equal(t, SensitiveReplacementRule{Word: "色情", Replacement: "净化"}, rules[0])
 	assert.Equal(t, SensitiveReplacementRule{Word: "AV", Replacement: "YY"}, rules[1])
 	assert.Equal(t, SensitiveReplacementRule{Word: "empty", Replacement: DefaultSensitiveReplacement}, rules[2])
+	assert.Equal(t, SensitiveReplacementRule{Word: "bad", Replacement: "MASK # note"}, rules[3])
+	assert.Equal(t, SensitiveReplacementRule{Word: "url", Replacement: "https://example.com//keep"}, rules[4])
+}
+
+func TestShouldReplacePromptSensitiveIgnoresOnlyCommentRules(t *testing.T) {
+	oldEnabled := setting.SensitiveReplacementEnabled
+	oldRules := append([]string(nil), setting.SensitiveReplacementRules...)
+	t.Cleanup(func() {
+		setting.SensitiveReplacementEnabled = oldEnabled
+		setting.SensitiveReplacementRules = oldRules
+	})
+
+	setting.SensitiveReplacementEnabled = true
+	setting.SensitiveReplacementRules = []string{"", "# comment", " // comment "}
+	assert.False(t, setting.ShouldReplacePromptSensitive())
+
+	setting.SensitiveReplacementRules = []string{"# comment", "secret=>MASK"}
+	assert.True(t, setting.ShouldReplacePromptSensitive())
 }
 
 func TestReplaceSensitiveTextBoundariesAndLongestMatch(t *testing.T) {
@@ -168,7 +191,9 @@ func TestRewriteSensitiveRequestBodyReplacesReusablePayload(t *testing.T) {
 	c.Request = httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
 	c.Request.Header.Set("Content-Type", "application/json")
 
-	require.NoError(t, RewriteSensitiveReplacementRequestBody(c))
+	result, err := RewriteSensitiveReplacementRequestBody(c)
+	require.NoError(t, err)
+	require.True(t, result.Changed)
 
 	storage, err := common.GetBodyStorage(c)
 	require.NoError(t, err)
@@ -178,17 +203,57 @@ func TestRewriteSensitiveRequestBodyReplacesReusablePayload(t *testing.T) {
 	assert.Contains(t, string(rewritten), "MASK")
 }
 
+func TestSanitizeSensitiveReplacementJSONBytesSkipsProtocolControlFields(t *testing.T) {
+	withSensitiveReplacementRules(t, []string{"secret=>MASK"})
+
+	body := []byte(`{"model":"secret-model","messages":[{"role":"secret","name":"secret","content":"secret"}],"metadata":{"type":"secret","name":"secret","content":"secret","note":"secret","id":9007199254740993}}`)
+
+	rewritten, result, err := SanitizeSensitiveReplacementJSONBytes(body)
+
+	require.NoError(t, err)
+	require.True(t, result.Changed)
+	assert.Contains(t, string(rewritten), `"model":"secret-model"`)
+	assert.Contains(t, string(rewritten), `"role":"secret"`)
+	assert.Contains(t, string(rewritten), `"name":"secret"`)
+	assert.Contains(t, string(rewritten), `"type":"MASK"`)
+	assert.Contains(t, string(rewritten), `"name":"MASK"`)
+	assert.Contains(t, string(rewritten), `"content":"MASK"`)
+	assert.Contains(t, string(rewritten), `"note":"MASK"`)
+	assert.Contains(t, string(rewritten), `"id":9007199254740993`)
+}
+
+func TestRewriteSensitiveFormRequestBody(t *testing.T) {
+	withSensitiveReplacementRules(t, []string{"secret=>MASK"})
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	values := url.Values{"prompt": []string{"secret"}, "model": []string{"secret-model"}}
+	c.Request = httptest.NewRequest("POST", "/v1/audio/speech", strings.NewReader(values.Encode()))
+	c.Request.Header.Set("Content-Type", gin.MIMEPOSTForm)
+
+	result, err := RewriteSensitiveReplacementRequestBody(c)
+
+	require.NoError(t, err)
+	require.True(t, result.Changed)
+	storage, err := common.GetBodyStorage(c)
+	require.NoError(t, err)
+	rewritten, err := storage.Bytes()
+	require.NoError(t, err)
+	assert.NotContains(t, string(rewritten), "prompt=secret")
+	assert.Contains(t, string(rewritten), "prompt=MASK")
+	assert.Contains(t, string(rewritten), "model=secret-model")
+}
+
 func TestRewriteSensitiveMultipartRequestBody(t *testing.T) {
 	withSensitiveReplacementRules(t, []string{"secret=>MASK"})
 	gin.SetMode(gin.TestMode)
 
 	var body strings.Builder
 	writer := multipart.NewWriter(&body)
-	require.NoError(t, writer.WriteField("model", "gpt-image-1"))
+	require.NoError(t, writer.WriteField("model", "secret-model"))
 	require.NoError(t, writer.WriteField("prompt", "secret"))
 	part, err := writer.CreateFormFile("image", "test.png")
 	require.NoError(t, err)
-	_, err = part.Write([]byte("image-bytes"))
+	_, err = part.Write([]byte("secret-file-bytes"))
 	require.NoError(t, err)
 	require.NoError(t, writer.Close())
 
@@ -196,15 +261,19 @@ func TestRewriteSensitiveMultipartRequestBody(t *testing.T) {
 	c.Request = httptest.NewRequest("POST", "/v1/images/edits", strings.NewReader(body.String()))
 	c.Request.Header.Set("Content-Type", writer.FormDataContentType())
 
-	require.NoError(t, RewriteSensitiveReplacementRequestBody(c))
+	result, err := RewriteSensitiveReplacementRequestBody(c)
+	require.NoError(t, err)
+	require.True(t, result.Changed)
 
 	storage, err := common.GetBodyStorage(c)
 	require.NoError(t, err)
 	rewritten, err := storage.Bytes()
 	require.NoError(t, err)
-	assert.NotContains(t, string(rewritten), "secret")
 	assert.Contains(t, string(rewritten), "MASK")
+	assert.Contains(t, string(rewritten), "secret-model")
+	assert.Contains(t, string(rewritten), "secret-file-bytes")
 	assert.Equal(t, "MASK", c.Request.MultipartForm.Value["prompt"][0])
+	assert.Equal(t, "secret-model", c.Request.MultipartForm.Value["model"][0])
 }
 
 func TestSensitiveReplacementLogPagination(t *testing.T) {

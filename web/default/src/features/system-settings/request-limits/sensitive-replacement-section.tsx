@@ -186,7 +186,7 @@ export function SensitiveReplacementSection({
                 </FormControl>
                 <FormDescription>
                   {t(
-                    'Enter one rule per line. Use keyword=>replacement, or omit replacement to use XX.'
+                    'Enter one rule per line. Use keyword=>replacement, omit replacement to use XX, and start a line with # or // for comments.'
                   )}
                 </FormDescription>
                 <FormMessage />

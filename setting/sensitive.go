@@ -25,7 +25,8 @@ var SensitiveReplacementEnabled = false
 var SensitiveReplacementLogRetentionDays = 30
 
 // SensitiveReplacementRules stores one replacement rule per line:
-// word=>replacement, or word for the default replacement.
+// word=>replacement, or word for the default replacement. Full-line comments
+// are preserved for admins and ignored when replacement rules are evaluated.
 var SensitiveReplacementRules []string
 
 func SensitiveWordsToString() string {
@@ -62,8 +63,21 @@ func SensitiveReplacementRulesFromString(s string) {
 	}
 }
 
+func IsSensitiveReplacementRuleLine(line string) bool {
+	line = strings.TrimSpace(line)
+	return line != "" && !strings.HasPrefix(line, "#") && !strings.HasPrefix(line, "//")
+}
+
 func ShouldReplacePromptSensitive() bool {
-	return SensitiveReplacementEnabled && len(SensitiveReplacementRules) > 0
+	if !SensitiveReplacementEnabled {
+		return false
+	}
+	for _, rule := range SensitiveReplacementRules {
+		if IsSensitiveReplacementRuleLine(rule) {
+			return true
+		}
+	}
+	return false
 }
 
 //func ShouldCheckCompletionSensitive() bool {

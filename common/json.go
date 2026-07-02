@@ -3,11 +3,28 @@ package common
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 )
 
 func Unmarshal(data []byte, v any) error {
 	return json.Unmarshal(data, v)
+}
+
+func UnmarshalUseNumber(data []byte, v any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(v); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("invalid json: multiple JSON values")
+		}
+		return err
+	}
+	return nil
 }
 
 func UnmarshalJsonStr(data string, v any) error {

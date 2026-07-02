@@ -101,6 +101,9 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 				return newAPIErrorFromParamOverride(err)
 			}
 		}
+		if jsonData, newAPIError = sanitizeOutboundSensitiveReplacementJSON(c, jsonData); newAPIError != nil {
+			return newAPIError
+		}
 
 		logger.LogDebug(c, "requestBody: %s", jsonData)
 		body, size, closer, err := relaycommon.NewOutboundJSONBody(jsonData)

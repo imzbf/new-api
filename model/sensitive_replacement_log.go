@@ -1,6 +1,23 @@
 package model
 
-import "context"
+import (
+	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
+	"io"
+	"strings"
+
+	"github.com/QuantumNous/new-api/common"
+)
+
+const (
+	sensitiveReplacementLogEncryptionPrefix  = "enc:v1:"
+	sensitiveReplacementLogEncryptionPurpose = "\x00sensitive_replacement_log:v1"
+)
 
 type SensitiveReplacementLog struct {
 	Id              int    `json:"id" gorm:"index:idx_sensitive_replacement_logs_created_at_id,priority:2"`
@@ -23,6 +40,11 @@ func RecordSensitiveReplacementLogs(logs []*SensitiveReplacementLog) error {
 	if len(logs) == 0 {
 		return nil
 	}
+	for _, log := range logs {
+		if err := encryptSensitiveReplacementLog(log); err != nil {
+			return err
+		}
+	}
 	return DB.Create(&logs).Error
 }
 
@@ -32,6 +54,12 @@ func GetSensitiveReplacementLogs(startIdx int, num int) (logs []*SensitiveReplac
 		return nil, 0, err
 	}
 	err = tx.Order("created_at desc, id desc").Limit(num).Offset(startIdx).Find(&logs).Error
+	if err != nil {
+		return nil, 0, err
+	}
+	if err = decryptSensitiveReplacementLogs(logs); err != nil {
+		return nil, 0, err
+	}
 	return logs, total, err
 }
 
@@ -69,4 +97,100 @@ func DeleteOldSensitiveReplacementLogBatch(ctx context.Context, targetTimestamp 
 		return 0, result.Error
 	}
 	return result.RowsAffected, nil
+}
+
+func encryptSensitiveReplacementLog(log *SensitiveReplacementLog) error {
+	if log == nil {
+		return nil
+	}
+	var err error
+	if log.MatchedWord, err = encryptSensitiveReplacementLogText(log.MatchedWord); err != nil {
+		return err
+	}
+	if log.Replacement, err = encryptSensitiveReplacementLogText(log.Replacement); err != nil {
+		return err
+	}
+	if log.OriginalContext, err = encryptSensitiveReplacementLogText(log.OriginalContext); err != nil {
+		return err
+	}
+	log.ReplacedContext, err = encryptSensitiveReplacementLogText(log.ReplacedContext)
+	return err
+}
+
+func decryptSensitiveReplacementLogs(logs []*SensitiveReplacementLog) error {
+	for _, log := range logs {
+		if log == nil {
+			continue
+		}
+		var err error
+		if log.MatchedWord, err = decryptSensitiveReplacementLogText(log.MatchedWord); err != nil {
+			return err
+		}
+		if log.Replacement, err = decryptSensitiveReplacementLogText(log.Replacement); err != nil {
+			return err
+		}
+		if log.OriginalContext, err = decryptSensitiveReplacementLogText(log.OriginalContext); err != nil {
+			return err
+		}
+		if log.ReplacedContext, err = decryptSensitiveReplacementLogText(log.ReplacedContext); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func encryptSensitiveReplacementLogText(value string) (string, error) {
+	if value == "" || strings.HasPrefix(value, sensitiveReplacementLogEncryptionPrefix) {
+		return value, nil
+	}
+	gcm, err := sensitiveReplacementLogGCM()
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+	// Prefix the nonce to the ciphertext so each field stays self-contained and
+	// can be decrypted without storing extra columns.
+	sealed := gcm.Seal(nonce, nonce, []byte(value), nil)
+	return sensitiveReplacementLogEncryptionPrefix + base64.StdEncoding.EncodeToString(sealed), nil
+}
+
+func decryptSensitiveReplacementLogText(value string) (string, error) {
+	if value == "" {
+		return value, nil
+	}
+	if !strings.HasPrefix(value, sensitiveReplacementLogEncryptionPrefix) {
+		return "", fmt.Errorf("decrypt sensitive replacement log: plaintext value is not supported")
+	}
+	encoded := strings.TrimPrefix(value, sensitiveReplacementLogEncryptionPrefix)
+	sealed, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", fmt.Errorf("decrypt sensitive replacement log: invalid ciphertext encoding: %w", err)
+	}
+	gcm, err := sensitiveReplacementLogGCM()
+	if err != nil {
+		return "", err
+	}
+	nonceSize := gcm.NonceSize()
+	if len(sealed) <= nonceSize {
+		return "", fmt.Errorf("decrypt sensitive replacement log: ciphertext too short")
+	}
+	nonce := sealed[:nonceSize]
+	ciphertext := sealed[nonceSize:]
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return "", fmt.Errorf("decrypt sensitive replacement log: %w", err)
+	}
+	return string(plaintext), nil
+}
+
+func sensitiveReplacementLogGCM() (cipher.AEAD, error) {
+	key := sha256.Sum256([]byte(common.CryptoSecret + sensitiveReplacementLogEncryptionPurpose))
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
 }

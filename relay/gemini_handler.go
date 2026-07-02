@@ -161,6 +161,9 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 				return newAPIErrorFromParamOverride(err)
 			}
 		}
+		if jsonData, newAPIError = sanitizeOutboundSensitiveReplacementJSON(c, jsonData); newAPIError != nil {
+			return newAPIError
+		}
 
 		logger.LogDebug(c, "Gemini request body: %s", jsonData)
 
@@ -267,6 +270,9 @@ func GeminiEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo) (newAPI
 		if err != nil {
 			return newAPIErrorFromParamOverride(err)
 		}
+	}
+	if jsonData, newAPIError = sanitizeOutboundSensitiveReplacementJSON(c, jsonData); newAPIError != nil {
+		return newAPIError
 	}
 	logger.LogDebug(c, "Gemini embedding request body: %s", jsonData)
 	body, size, closer, err := relaycommon.NewOutboundJSONBody(jsonData)

@@ -172,6 +172,9 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 				return newAPIErrorFromParamOverride(err)
 			}
 		}
+		if jsonData, newAPIError = sanitizeOutboundSensitiveReplacementJSON(c, jsonData); newAPIError != nil {
+			return newAPIError
+		}
 
 		logger.LogDebug(c, "text request body: %s", jsonData)
 

@@ -23,6 +23,7 @@ import (
 const (
 	DefaultSensitiveReplacement = "XX"
 	sensitiveContextRuneRadius  = 24
+	sensitiveReplacementLogKey  = "_sensitive_replacement_log_matches"
 )
 
 // SensitiveReplacementRule is one normalized line from the independent
@@ -63,14 +64,15 @@ type sensitiveReplacementAccumulator struct {
 }
 
 // ParseSensitiveReplacementRules parses replacement rule lines:
-// "word=>replacement" or "word" (defaulting to XX). Duplicate words are
-// resolved by keeping the later rule, matching the admin page behavior.
+// "word=>replacement" or "word" (defaulting to XX). Full-line comments are
+// ignored, while inline comment-looking text remains part of the rule value.
+// Duplicate words are resolved by keeping the later rule.
 func ParseSensitiveReplacementRules(lines []string) []SensitiveReplacementRule {
 	rules := make([]SensitiveReplacementRule, 0, len(lines))
 	indexByWord := make(map[string]int, len(lines))
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" {
+		if !setting.IsSensitiveReplacementRuleLine(line) {
 			continue
 		}
 		word, replacement, hasReplacement := strings.Cut(line, "=>")
@@ -277,6 +279,48 @@ func SensitiveReplacementWords(matches []SensitiveReplacementMatch) []string {
 		words = append(words, match.Word)
 	}
 	return words
+}
+
+func SensitiveReplacementCount(matches []SensitiveReplacementMatch) int {
+	count := 0
+	for _, match := range matches {
+		count += match.Count
+	}
+	return count
+}
+
+func MergeSensitiveReplacementMatches(c *gin.Context, matches []SensitiveReplacementMatch) {
+	if c == nil || len(matches) == 0 {
+		return
+	}
+	acc, ok := c.Get(sensitiveReplacementLogKey)
+	if !ok || acc == nil {
+		requestAcc := &sensitiveReplacementAccumulator{index: make(map[string]int)}
+		requestAcc.merge(matches)
+		c.Set(sensitiveReplacementLogKey, requestAcc)
+		return
+	}
+	if requestAcc, ok := acc.(*sensitiveReplacementAccumulator); ok {
+		requestAcc.merge(matches)
+	}
+}
+
+func FlushSensitiveReplacementLogs(c *gin.Context, modelName string) []SensitiveReplacementMatch {
+	if c == nil {
+		return nil
+	}
+	acc, ok := c.Get(sensitiveReplacementLogKey)
+	if !ok || acc == nil {
+		return nil
+	}
+	requestAcc, ok := acc.(*sensitiveReplacementAccumulator)
+	if !ok || len(requestAcc.matches) == 0 {
+		return nil
+	}
+	matches := append([]SensitiveReplacementMatch(nil), requestAcc.matches...)
+	c.Set(sensitiveReplacementLogKey, nil)
+	RecordSensitiveReplacementLogs(c, modelName, matches)
+	return matches
 }
 
 // ApplySensitiveReplacementsToRequest mutates parsed request DTO text fields
@@ -651,10 +695,12 @@ func replaceRawJSONString(raw []byte, acc *sensitiveReplacementAccumulator) ([]b
 }
 
 // RewriteSensitiveReplacementRequestBody updates the reusable body cache so
-// pass-through mode sees the same replacements as typed relay DTOs.
-func RewriteSensitiveReplacementRequestBody(c *gin.Context) error {
+// pass-through mode sees the same replacements as typed relay DTOs. It returns
+// matches from the raw body sanitizer because pass-through payloads may contain
+// extra JSON/form fields that are intentionally absent from the typed DTOs.
+func RewriteSensitiveReplacementRequestBody(c *gin.Context) (SensitiveReplacementTextResult, error) {
 	if c == nil || c.Request == nil {
-		return nil
+		return SensitiveReplacementTextResult{}, nil
 	}
 	contentType := c.Request.Header.Get("Content-Type")
 	switch {
@@ -665,39 +711,57 @@ func RewriteSensitiveReplacementRequestBody(c *gin.Context) error {
 	case strings.HasPrefix(contentType, "application/json"):
 		return rewriteJSONSensitiveReplacementBody(c)
 	default:
-		return nil
+		return SensitiveReplacementTextResult{}, nil
 	}
 }
 
-func rewriteJSONSensitiveReplacementBody(c *gin.Context) error {
-	storage, err := common.GetBodyStorage(c)
-	if err != nil {
-		return err
-	}
-	body, err := storage.Bytes()
-	if err != nil {
-		return err
+func SanitizeSensitiveReplacementJSONBytes(body []byte) ([]byte, SensitiveReplacementTextResult, error) {
+	if len(body) == 0 {
+		return body, SensitiveReplacementTextResult{}, nil
 	}
 	var value any
-	if err := common.Unmarshal(body, &value); err != nil {
-		return err
+	if err := common.UnmarshalUseNumber(body, &value); err != nil {
+		return nil, SensitiveReplacementTextResult{}, err
 	}
 	acc := newSensitiveReplacementAccumulator()
-	if !replaceJSONStringValues(value, acc) {
-		return nil
+	if len(acc.rules) == 0 {
+		return body, SensitiveReplacementTextResult{}, nil
+	}
+	if text, ok := value.(string); ok {
+		next, changed := acc.replace(text)
+		if !changed {
+			return body, SensitiveReplacementTextResult{}, nil
+		}
+		value = next
+	} else if !replaceJSONStringValues(value, acc, nil) {
+		return body, SensitiveReplacementTextResult{}, nil
 	}
 	nextBody, err := common.Marshal(value)
 	if err != nil {
-		return err
+		return nil, SensitiveReplacementTextResult{}, err
 	}
-	return resetReusableBody(c, nextBody)
+	return nextBody, SensitiveReplacementTextResult{Changed: true, Content: string(nextBody), Matches: acc.matches}, nil
 }
 
-func replaceJSONStringValues(value any, acc *sensitiveReplacementAccumulator) bool {
+func rewriteJSONSensitiveReplacementBody(c *gin.Context) (SensitiveReplacementTextResult, error) {
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		return SensitiveReplacementTextResult{}, err
+	}
+	body, err := storage.Bytes()
+	if err != nil {
+		return SensitiveReplacementTextResult{}, err
+	}
+	nextBody, result, err := SanitizeSensitiveReplacementJSONBytes(body)
+	if err != nil || !result.Changed {
+		return result, err
+	}
+	return result, resetReusableBody(c, nextBody)
+}
+
+func replaceJSONStringValues(value any, acc *sensitiveReplacementAccumulator, path []string) bool {
 	changed := false
 	switch v := value.(type) {
-	case string:
-		return false
 	case []any:
 		for i := range v {
 			if text, ok := v[i].(string); ok {
@@ -707,12 +771,15 @@ func replaceJSONStringValues(value any, acc *sensitiveReplacementAccumulator) bo
 				}
 				continue
 			}
-			if replaceJSONStringValues(v[i], acc) {
+			if replaceJSONStringValues(v[i], acc, path) {
 				changed = true
 			}
 		}
 	case map[string]any:
 		for key, item := range v {
+			if isSensitiveReplacementJSONControlField(path, key) {
+				continue
+			}
 			if text, ok := item.(string); ok {
 				if next, didReplace := acc.replace(text); didReplace {
 					v[key] = next
@@ -720,7 +787,7 @@ func replaceJSONStringValues(value any, acc *sensitiveReplacementAccumulator) bo
 				}
 				continue
 			}
-			if replaceJSONStringValues(item, acc) {
+			if replaceJSONStringValues(item, acc, append(path, strings.ToLower(key))) {
 				changed = true
 			}
 		}
@@ -728,22 +795,65 @@ func replaceJSONStringValues(value any, acc *sensitiveReplacementAccumulator) bo
 	return changed
 }
 
-func rewriteFormSensitiveReplacementBody(c *gin.Context) error {
+func isSensitiveReplacementJSONControlField(path []string, key string) bool {
+	key = strings.ToLower(key)
+	switch key {
+	case "model":
+		return len(path) == 0 || pathEndsWith(path, "requests")
+	case "role":
+		return pathHasAny(path, "messages", "contents")
+	case "type":
+		return pathHasAny(path, "messages", "content", "input", "tools", "tool_calls", "system", "parts", "source")
+	case "name":
+		return pathHasAny(path, "messages", "tools", "functions", "tool_calls")
+	default:
+		return false
+	}
+}
+
+func pathEndsWith(path []string, value string) bool {
+	return len(path) > 0 && path[len(path)-1] == value
+}
+
+func pathHasAny(path []string, values ...string) bool {
+	for _, item := range path {
+		for _, value := range values {
+			if item == value {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isSensitiveReplacementFlatControlField(key string) bool {
+	switch strings.ToLower(key) {
+	case "model", "role", "type", "name":
+		return true
+	default:
+		return false
+	}
+}
+
+func rewriteFormSensitiveReplacementBody(c *gin.Context) (SensitiveReplacementTextResult, error) {
 	storage, err := common.GetBodyStorage(c)
 	if err != nil {
-		return err
+		return SensitiveReplacementTextResult{}, err
 	}
 	body, err := storage.Bytes()
 	if err != nil {
-		return err
+		return SensitiveReplacementTextResult{}, err
 	}
 	values, err := url.ParseQuery(string(body))
 	if err != nil {
-		return err
+		return SensitiveReplacementTextResult{}, err
 	}
 	acc := newSensitiveReplacementAccumulator()
 	changed := false
 	for key, items := range values {
+		if isSensitiveReplacementFlatControlField(key) {
+			continue
+		}
 		for i := range items {
 			if next, didReplace := acc.replace(items[i]); didReplace {
 				items[i] = next
@@ -753,20 +863,24 @@ func rewriteFormSensitiveReplacementBody(c *gin.Context) error {
 		values[key] = items
 	}
 	if !changed {
-		return nil
+		return SensitiveReplacementTextResult{}, nil
 	}
 	c.Request.PostForm = values
-	return resetReusableBody(c, []byte(values.Encode()))
+	result := SensitiveReplacementTextResult{Changed: true, Content: values.Encode(), Matches: acc.matches}
+	return result, resetReusableBody(c, []byte(result.Content))
 }
 
-func rewriteMultipartSensitiveReplacementBody(c *gin.Context) error {
+func rewriteMultipartSensitiveReplacementBody(c *gin.Context) (SensitiveReplacementTextResult, error) {
 	form, err := common.ParseMultipartFormReusable(c)
 	if err != nil {
-		return err
+		return SensitiveReplacementTextResult{}, err
 	}
 	acc := newSensitiveReplacementAccumulator()
 	changed := false
 	for key, values := range form.Value {
+		if isSensitiveReplacementFlatControlField(key) {
+			continue
+		}
 		for i := range values {
 			if next, didReplace := acc.replace(values[i]); didReplace {
 				values[i] = next
@@ -776,7 +890,7 @@ func rewriteMultipartSensitiveReplacementBody(c *gin.Context) error {
 		form.Value[key] = values
 	}
 	if !changed {
-		return nil
+		return SensitiveReplacementTextResult{}, nil
 	}
 
 	var requestBody bytes.Buffer
@@ -784,19 +898,19 @@ func rewriteMultipartSensitiveReplacementBody(c *gin.Context) error {
 	for key, values := range form.Value {
 		for _, value := range values {
 			if err := writer.WriteField(key, value); err != nil {
-				return err
+				return SensitiveReplacementTextResult{}, err
 			}
 		}
 	}
 	for fieldName, files := range form.File {
 		for _, fileHeader := range files {
 			if err := copyMultipartFile(writer, fieldName, fileHeader); err != nil {
-				return err
+				return SensitiveReplacementTextResult{}, err
 			}
 		}
 	}
 	if err := writer.Close(); err != nil {
-		return err
+		return SensitiveReplacementTextResult{}, err
 	}
 
 	contentType := writer.FormDataContentType()
@@ -804,7 +918,8 @@ func rewriteMultipartSensitiveReplacementBody(c *gin.Context) error {
 	c.Set("_original_multipart_ct", contentType)
 	c.Request.MultipartForm = form
 	c.Request.PostForm = url.Values(form.Value)
-	return resetReusableBody(c, requestBody.Bytes())
+	result := SensitiveReplacementTextResult{Changed: true, Content: requestBody.String(), Matches: acc.matches}
+	return result, resetReusableBody(c, requestBody.Bytes())
 }
 
 func copyMultipartFile(writer *multipart.Writer, fieldName string, fileHeader *multipart.FileHeader) error {

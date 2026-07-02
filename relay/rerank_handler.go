@@ -66,6 +66,9 @@ func RerankHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 				return newAPIErrorFromParamOverride(err)
 			}
 		}
+		if jsonData, newAPIError = sanitizeOutboundSensitiveReplacementJSON(c, jsonData); newAPIError != nil {
+			return newAPIError
+		}
 
 		logger.LogDebug(c, "Rerank request body: %s", jsonData)
 		body, size, closer, err := relaycommon.NewOutboundJSONBody(jsonData)

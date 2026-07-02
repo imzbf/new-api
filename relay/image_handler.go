@@ -75,6 +75,9 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 					return newAPIErrorFromParamOverride(err)
 				}
 			}
+			if jsonData, newAPIError = sanitizeOutboundSensitiveReplacementJSON(c, jsonData); newAPIError != nil {
+				return newAPIError
+			}
 
 			logger.LogDebug(c, "image request body: %s", jsonData)
 			body, size, closer, err := relaycommon.NewOutboundJSONBody(jsonData)

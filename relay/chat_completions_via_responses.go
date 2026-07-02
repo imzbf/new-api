@@ -123,6 +123,11 @@ func chatCompletionsViaResponses(c *gin.Context, info *relaycommon.RelayInfo, ad
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 	}
+	if sanitized, newAPIError := sanitizeOutboundSensitiveReplacementJSON(c, jsonData); newAPIError != nil {
+		return nil, newAPIError
+	} else {
+		jsonData = sanitized
+	}
 
 	body, size, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
 	if err != nil {
