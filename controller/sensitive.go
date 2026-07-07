@@ -32,6 +32,7 @@ func GetSensitiveReplacementLogs(c *gin.Context) {
 			Count:           log.Count,
 			OriginalContext: log.OriginalContext,
 			ReplacedContext: log.ReplacedContext,
+			DecryptFailed:   log.DecryptFailed,
 		})
 	}
 	pageInfo.SetTotal(int(total))

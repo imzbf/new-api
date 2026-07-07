@@ -54,6 +54,7 @@ export type SensitiveReplacementLog = {
   count: number
   original_context: string
   replaced_context: string
+  decrypt_failed: boolean
 }
 
 export type SensitiveReplacementLogPage = {

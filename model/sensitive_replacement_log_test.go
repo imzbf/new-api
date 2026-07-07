@@ -75,7 +75,7 @@ func TestSensitiveReplacementLogsAreEncryptedAtRest(t *testing.T) {
 	assert.Equal(t, "before MASK after", logs[0].ReplacedContext)
 }
 
-func TestSensitiveReplacementLogPlaintextRowsAreRejected(t *testing.T) {
+func TestSensitiveReplacementLogPlaintextRowsAreHidden(t *testing.T) {
 	truncateTables(t)
 
 	require.NoError(t, DB.Create(&SensitiveReplacementLog{
@@ -88,12 +88,18 @@ func TestSensitiveReplacementLogPlaintextRowsAreRejected(t *testing.T) {
 		Count:           1,
 	}).Error)
 
-	_, _, err := GetSensitiveReplacementLogs(0, 10)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "plaintext value is not supported")
+	logs, total, err := GetSensitiveReplacementLogs(0, 10)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	require.Len(t, logs, 1)
+	assert.True(t, logs[0].DecryptFailed)
+	assert.Empty(t, logs[0].MatchedWord)
+	assert.Empty(t, logs[0].Replacement)
+	assert.Empty(t, logs[0].OriginalContext)
+	assert.Empty(t, logs[0].ReplacedContext)
 }
 
-func TestSensitiveReplacementLogDecryptFailureIsReturned(t *testing.T) {
+func TestSensitiveReplacementLogDecryptFailureIsHidden(t *testing.T) {
 	truncateTables(t)
 	oldSecret := common.CryptoSecret
 	t.Cleanup(func() {
@@ -112,7 +118,13 @@ func TestSensitiveReplacementLogDecryptFailureIsReturned(t *testing.T) {
 	}}))
 
 	common.CryptoSecret = "secret-two"
-	_, _, err := GetSensitiveReplacementLogs(0, 10)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "decrypt sensitive replacement log")
+	logs, total, err := GetSensitiveReplacementLogs(0, 10)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	require.Len(t, logs, 1)
+	assert.True(t, logs[0].DecryptFailed)
+	assert.Empty(t, logs[0].MatchedWord)
+	assert.Empty(t, logs[0].Replacement)
+	assert.Empty(t, logs[0].OriginalContext)
+	assert.Empty(t, logs[0].ReplacedContext)
 }

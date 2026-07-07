@@ -18,13 +18,16 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronLeft, ChevronRight, RefreshCw, Trash2 } from 'lucide-react'
+import { getRouteApi } from '@tanstack/react-router'
+import type { ColumnDef } from '@tanstack/react-table'
+import { RefreshCw, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import * as z from 'zod'
 
+import { DataTablePagination, useDataTable } from '@/components/data-table'
 import { DateTimePicker } from '@/components/datetime-picker'
 import {
   AlertDialog,
@@ -61,6 +64,8 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
+import { useMediaQuery } from '@/hooks'
+import { useTableUrlState } from '@/hooks/use-table-url-state'
 import { formatTimestampToDate } from '@/lib/format'
 
 import {
@@ -83,6 +88,7 @@ import type {
   SensitiveReplacementLogCleanupTask,
 } from '../types'
 
+const route = getRouteApi('/_authenticated/system-settings/security/$section')
 const REPLACEMENT_LOG_PAGE_SIZE = 10
 const CLEANUP_TASK_POLL_INTERVAL_MS = 1000
 
@@ -107,9 +113,9 @@ const getDateDaysAgo = (days: number) => {
 }
 
 const cleanupQuickSelectOptions = [
-  { label: '30 days ago', getValue: () => getDateDaysAgo(30) },
-  { label: '90 days ago', getValue: () => getDateDaysAgo(90) },
-  { label: '180 days ago', getValue: () => getDateDaysAgo(180) },
+  { label: '1 day ago', getValue: () => getDateDaysAgo(1) },
+  { label: '{{count}} days ago', count: 3, getValue: () => getDateDaysAgo(3) },
+  { label: '1 week ago', getValue: () => getDateDaysAgo(7) },
 ]
 
 export function SensitiveReplacementSection({
@@ -231,9 +237,22 @@ export function SensitiveReplacementSection({
 
 function SensitiveReplacementLogsPanel() {
   const { t } = useTranslation()
-  const [page, setPage] = useState(1)
-  const [cleanupDate, setCleanupDate] = useState<Date | undefined>(() =>
-    getDateDaysAgo(30)
+  const isMobile = useMediaQuery('(max-width: 640px)')
+  const {
+    pagination,
+    onPaginationChange,
+    ensurePageInRange,
+  } = useTableUrlState({
+    search: route.useSearch(),
+    navigate: route.useNavigate(),
+    pagination: {
+      defaultPage: 1,
+      defaultPageSize: isMobile ? 10 : REPLACEMENT_LOG_PAGE_SIZE,
+    },
+    globalFilter: { enabled: false },
+  })
+  const [cleanupDate, setCleanupDate] = useState<Date | undefined>(
+    () => new Date()
   )
   const [cleanupTask, setCleanupTask] =
     useState<SensitiveReplacementLogCleanupTask | null>(null)
@@ -241,22 +260,56 @@ function SensitiveReplacementLogsPanel() {
   const [showCleanupConfirmDialog, setShowCleanupConfirmDialog] =
     useState(false)
   const logsQuery = useQuery({
-    queryKey: ['sensitive-replacement-logs', page],
-    queryFn: () =>
-      getSensitiveReplacementLogs({
-        p: page,
-        page_size: REPLACEMENT_LOG_PAGE_SIZE,
-      }),
+    queryKey: [
+      'sensitive-replacement-logs',
+      pagination.pageIndex + 1,
+      pagination.pageSize,
+      t,
+    ],
+    queryFn: async () => {
+      const res = await getSensitiveReplacementLogs({
+        p: pagination.pageIndex + 1,
+        page_size: pagination.pageSize,
+      })
+      if (!res.success) {
+        toast.error(res.message || t('Failed to load logs'))
+        return {
+          page: pagination.pageIndex + 1,
+          page_size: pagination.pageSize,
+          total: 0,
+          items: [],
+        }
+      }
+      return res.data
+    },
+    placeholderData: (previousData) => previousData,
   })
 
-  const pageData = logsQuery.data?.success ? logsQuery.data.data : undefined
+  const pageData = logsQuery.data
   const logs = pageData?.items ?? []
   const total = pageData?.total ?? 0
   const refetchLogs = logsQuery.refetch
-  const totalPages = Math.max(
-    1,
-    Math.ceil(total / REPLACEMENT_LOG_PAGE_SIZE)
+  const columns = useMemo<ColumnDef<SensitiveReplacementLog>[]>(
+    () => [
+      { accessorKey: 'created_at', header: t('Time') },
+      { accessorKey: 'username', header: t('User / Token') },
+      { accessorKey: 'request_path', header: t('Request') },
+      { accessorKey: 'matched_word', header: t('Rule') },
+      { accessorKey: 'count', header: t('Count') },
+      { accessorKey: 'original_context', header: t('Context snippets') },
+    ],
+    [t]
   )
+  const { table } = useDataTable({
+    data: logs,
+    columns,
+    pagination,
+    onPaginationChange,
+    manualPagination: true,
+    totalCount: total,
+    enableRowSelection: false,
+    ensurePageInRange,
+  })
   const cleanupTimestamp = useMemo(() => {
     if (!cleanupDate) return null
     return Math.floor(cleanupDate.getTime() / 1000)
@@ -274,12 +327,6 @@ function SensitiveReplacementLogsPanel() {
   const cleanupProcessed = cleanupTaskState?.processed ?? 0
   const cleanupTotal = cleanupTaskState?.total ?? 0
   const cleanupTaskId = cleanupTask?.task_id
-
-  useEffect(() => {
-    if (page > totalPages) {
-      setPage(totalPages)
-    }
-  }, [page, totalPages])
 
   useEffect(() => {
     let cancelled = false
@@ -419,7 +466,7 @@ function SensitiveReplacementLogsPanel() {
                   size='sm'
                   onClick={() => setCleanupDate(option.getValue())}
                 >
-                  {t(option.label)}
+                  {t(option.label, { count: option.count })}
                 </Button>
               ))}
               <Button
@@ -475,41 +522,12 @@ function SensitiveReplacementLogsPanel() {
           <TableBody>
             <ReplacementLogsTableRows
               isLoading={logsQuery.isLoading}
-              logs={logs}
+              logs={table.getRowModel().rows.map((row) => row.original)}
             />
           </TableBody>
         </Table>
-        <div className='flex flex-col gap-3 border-t px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between'>
-          <p className='text-muted-foreground text-xs'>
-            {t('Page {{page}} of {{total}}', {
-              page,
-              total: totalPages,
-            })}
-          </p>
-          <div className='flex items-center gap-2'>
-            <Button
-              type='button'
-              variant='outline'
-              size='sm'
-              onClick={() => setPage((current) => Math.max(1, current - 1))}
-              disabled={page <= 1 || logsQuery.isFetching}
-            >
-              <ChevronLeft className='size-4' />
-              {t('Previous')}
-            </Button>
-            <Button
-              type='button'
-              variant='outline'
-              size='sm'
-              onClick={() =>
-                setPage((current) => Math.min(totalPages, current + 1))
-              }
-              disabled={page >= totalPages || logsQuery.isFetching}
-            >
-              {t('Next')}
-              <ChevronRight className='size-4' />
-            </Button>
-          </div>
+        <div className='border-t px-3 py-2.5'>
+          <DataTablePagination table={table} />
         </div>
       </div>
 
@@ -561,6 +579,7 @@ function isActiveSensitiveReplacementLogCleanupTask(
 function ReplacementLogRow(props: { log: SensitiveReplacementLog }) {
   const { t } = useTranslation()
   const log = props.log
+  const decryptFailed = log.decrypt_failed
 
   return (
     <TableRow>
@@ -589,11 +608,15 @@ function ReplacementLogRow(props: { log: SensitiveReplacementLog }) {
         </div>
       </TableCell>
       <TableCell className='align-top'>
-        <div className='flex min-w-0 flex-wrap items-center gap-1.5'>
-          <Badge variant='outline'>{log.matched_word}</Badge>
-          <span className='text-muted-foreground text-xs'>=&gt;</span>
-          <Badge variant='secondary'>{log.replacement}</Badge>
-        </div>
+        {decryptFailed ? (
+          <Badge variant='destructive'>{t('Failed to load')}</Badge>
+        ) : (
+          <div className='flex min-w-0 flex-wrap items-center gap-1.5'>
+            <Badge variant='outline'>{log.matched_word}</Badge>
+            <span className='text-muted-foreground text-xs'>=&gt;</span>
+            <Badge variant='secondary'>{log.replacement}</Badge>
+          </div>
+        )}
       </TableCell>
       <TableCell className='align-top'>
         <Badge variant='outline'>{log.count}</Badge>

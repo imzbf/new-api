@@ -34,18 +34,28 @@ type SensitiveReplacementLog struct {
 	Count           int    `json:"count" gorm:"default:0"`
 	OriginalContext string `json:"original_context" gorm:"type:text"`
 	ReplacedContext string `json:"replaced_context" gorm:"type:text"`
+	DecryptFailed   bool   `json:"decrypt_failed" gorm:"-"`
 }
 
 func RecordSensitiveReplacementLogs(logs []*SensitiveReplacementLog) error {
 	if len(logs) == 0 {
 		return nil
 	}
+	encryptedLogs := make([]*SensitiveReplacementLog, 0, len(logs))
 	for _, log := range logs {
-		if err := encryptSensitiveReplacementLog(log); err != nil {
+		if log == nil {
+			continue
+		}
+		encryptedLog := *log
+		if err := encryptSensitiveReplacementLog(&encryptedLog); err != nil {
 			return err
 		}
+		encryptedLogs = append(encryptedLogs, &encryptedLog)
 	}
-	return DB.Create(&logs).Error
+	if len(encryptedLogs) == 0 {
+		return nil
+	}
+	return DB.Create(&encryptedLogs).Error
 }
 
 func GetSensitiveReplacementLogs(startIdx int, num int) (logs []*SensitiveReplacementLog, total int64, err error) {
@@ -122,21 +132,37 @@ func decryptSensitiveReplacementLogs(logs []*SensitiveReplacementLog) error {
 		if log == nil {
 			continue
 		}
-		var err error
-		if log.MatchedWord, err = decryptSensitiveReplacementLogText(log.MatchedWord); err != nil {
-			return err
-		}
-		if log.Replacement, err = decryptSensitiveReplacementLogText(log.Replacement); err != nil {
-			return err
-		}
-		if log.OriginalContext, err = decryptSensitiveReplacementLogText(log.OriginalContext); err != nil {
-			return err
-		}
-		if log.ReplacedContext, err = decryptSensitiveReplacementLogText(log.ReplacedContext); err != nil {
-			return err
-		}
+		decryptSensitiveReplacementLog(log)
 	}
 	return nil
+}
+
+func decryptSensitiveReplacementLog(log *SensitiveReplacementLog) {
+	var err error
+	if log.MatchedWord, err = decryptSensitiveReplacementLogText(log.MatchedWord); err != nil {
+		markSensitiveReplacementLogDecryptFailed(log)
+		return
+	}
+	if log.Replacement, err = decryptSensitiveReplacementLogText(log.Replacement); err != nil {
+		markSensitiveReplacementLogDecryptFailed(log)
+		return
+	}
+	if log.OriginalContext, err = decryptSensitiveReplacementLogText(log.OriginalContext); err != nil {
+		markSensitiveReplacementLogDecryptFailed(log)
+		return
+	}
+	if log.ReplacedContext, err = decryptSensitiveReplacementLogText(log.ReplacedContext); err != nil {
+		markSensitiveReplacementLogDecryptFailed(log)
+		return
+	}
+}
+
+func markSensitiveReplacementLogDecryptFailed(log *SensitiveReplacementLog) {
+	log.DecryptFailed = true
+	log.MatchedWord = ""
+	log.Replacement = ""
+	log.OriginalContext = ""
+	log.ReplacedContext = ""
 }
 
 func encryptSensitiveReplacementLogText(value string) (string, error) {

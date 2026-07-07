@@ -20,6 +20,7 @@ type SensitiveReplacementLog struct {
 	Count           int    `json:"count"`
 	OriginalContext string `json:"original_context"`
 	ReplacedContext string `json:"replaced_context"`
+	DecryptFailed   bool   `json:"decrypt_failed"`
 }
 
 type SensitiveReplacementLogPage struct {
