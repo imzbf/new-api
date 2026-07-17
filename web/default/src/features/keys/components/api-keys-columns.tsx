@@ -121,6 +121,7 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
           <StatusBadge
             label={t(statusConfig.label)}
             variant={statusConfig.variant}
+            showDot
             copyable={false}
             className='-ml-1.5'
           />

@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -610,57 +611,150 @@ func GetUserLogs(userId int, logType int, startTimestamp int64, endTimestamp int
 }
 
 type Stat struct {
-	Quota int `json:"quota"`
-	Rpm   int `json:"rpm"`
-	Tpm   int `json:"tpm"`
+	Quota            int   `json:"quota"`
+	Rpm              int   `json:"rpm"`
+	Tpm              int   `json:"tpm"`
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CacheTokens      int64 `json:"cache_tokens"`
+	CacheWriteTokens int64 `json:"cache_write_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+}
+
+type logStatFilter struct {
+	startTimestamp int64
+	endTimestamp   int64
+	modelName      string
+	username       string
+	tokenName      string
+	channel        int
+	group          string
+}
+
+func (filter logStatFilter) apply(tx *gorm.DB) (*gorm.DB, error) {
+	var err error
+	if tx, err = applyExplicitLogTextFilter(tx, "username", filter.username); err != nil {
+		return nil, err
+	}
+	if filter.tokenName != "" {
+		tx = tx.Where("token_name = ?", filter.tokenName)
+	}
+	if filter.startTimestamp != 0 {
+		tx = tx.Where("created_at >= ?", filter.startTimestamp)
+	}
+	if filter.endTimestamp != 0 {
+		tx = tx.Where("created_at <= ?", filter.endTimestamp)
+	}
+	if tx, err = applyExplicitLogTextFilter(tx, "model_name", filter.modelName); err != nil {
+		return nil, err
+	}
+	if filter.channel != 0 {
+		tx = tx.Where("channel_id = ?", filter.channel)
+	}
+	if filter.group != "" {
+		tx = tx.Where(logGroupCol+" = ?", filter.group)
+	}
+	return tx.Where("type = ?", LogTypeConsume), nil
+}
+
+type logTokenStatOther struct {
+	CacheTokens           int64  `json:"cache_tokens"`
+	CacheWriteTokens      *int64 `json:"cache_write_tokens"`
+	CacheCreationTokens   *int64 `json:"cache_creation_tokens"`
+	CacheCreationTokens5m *int64 `json:"cache_creation_tokens_5m"`
+	CacheCreationTokens1h *int64 `json:"cache_creation_tokens_1h"`
+}
+
+func sumLogTokenStats(tx *gorm.DB, stat *Stat) error {
+	rows, err := tx.Select("prompt_tokens, completion_tokens, other").Rows()
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var promptTokens sql.NullInt64
+		var completionTokens sql.NullInt64
+		var otherJSON sql.NullString
+		if err := rows.Scan(&promptTokens, &completionTokens, &otherJSON); err != nil {
+			return err
+		}
+
+		stat.PromptTokens += promptTokens.Int64
+		stat.CompletionTokens += completionTokens.Int64
+		if !otherJSON.Valid || otherJSON.String == "" {
+			continue
+		}
+
+		var other logTokenStatOther
+		if err := common.UnmarshalJsonStr(otherJSON.String, &other); err != nil {
+			// Historical logs can contain empty or malformed metadata. Their base
+			// input/output counts remain valid, while unavailable cache details are zero.
+			continue
+		}
+		if other.CacheTokens > 0 {
+			stat.CacheTokens += other.CacheTokens
+		}
+
+		// Field presence defines precedence so an explicit normalized zero does not
+		// accidentally revive stale legacy cache-creation values from the same log.
+		var cacheWriteTokens int64
+		switch {
+		case other.CacheWriteTokens != nil:
+			cacheWriteTokens = *other.CacheWriteTokens
+		case other.CacheCreationTokens5m != nil || other.CacheCreationTokens1h != nil:
+			if other.CacheCreationTokens5m != nil {
+				cacheWriteTokens += *other.CacheCreationTokens5m
+			}
+			if other.CacheCreationTokens1h != nil {
+				cacheWriteTokens += *other.CacheCreationTokens1h
+			}
+		case other.CacheCreationTokens != nil:
+			cacheWriteTokens = *other.CacheCreationTokens
+		}
+		if cacheWriteTokens > 0 {
+			stat.CacheWriteTokens += cacheWriteTokens
+		}
+	}
+	return rows.Err()
 }
 
 func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string) (stat Stat, err error) {
-	tx := LOG_DB.Table("logs").Select("COALESCE(sum(quota), 0) quota")
+	filter := logStatFilter{
+		startTimestamp: startTimestamp,
+		endTimestamp:   endTimestamp,
+		modelName:      modelName,
+		username:       username,
+		tokenName:      tokenName,
+		channel:        channel,
+		group:          group,
+	}
+
+	quotaQuery, err := filter.apply(LOG_DB.Table("logs").Select("COALESCE(sum(quota), 0) quota"))
+	if err != nil {
+		return stat, err
+	}
 
 	// 为rpm和tpm创建单独的查询
 	rpmTpmQuery := LOG_DB.Table("logs").Select("count(*) rpm, COALESCE(sum(prompt_tokens), 0) + COALESCE(sum(completion_tokens), 0) tpm")
-
-	if tx, err = applyExplicitLogTextFilter(tx, "username", username); err != nil {
+	rpmTpmQuery, err = filter.apply(rpmTpmQuery)
+	if err != nil {
 		return stat, err
 	}
-	if rpmTpmQuery, err = applyExplicitLogTextFilter(rpmTpmQuery, "username", username); err != nil {
+	tokenQuery, err := filter.apply(LOG_DB.Table("logs"))
+	if err != nil {
 		return stat, err
 	}
-	if tokenName != "" {
-		tx = tx.Where("token_name = ?", tokenName)
-		rpmTpmQuery = rpmTpmQuery.Where("token_name = ?", tokenName)
-	}
-	if startTimestamp != 0 {
-		tx = tx.Where("created_at >= ?", startTimestamp)
-	}
-	if endTimestamp != 0 {
-		tx = tx.Where("created_at <= ?", endTimestamp)
-	}
-	if tx, err = applyExplicitLogTextFilter(tx, "model_name", modelName); err != nil {
-		return stat, err
-	}
-	if rpmTpmQuery, err = applyExplicitLogTextFilter(rpmTpmQuery, "model_name", modelName); err != nil {
-		return stat, err
-	}
-	if channel != 0 {
-		tx = tx.Where("channel_id = ?", channel)
-		rpmTpmQuery = rpmTpmQuery.Where("channel_id = ?", channel)
-	}
-	if group != "" {
-		tx = tx.Where(logGroupCol+" = ?", group)
-		rpmTpmQuery = rpmTpmQuery.Where(logGroupCol+" = ?", group)
-	}
-
-	tx = tx.Where("type = ?", LogTypeConsume)
-	rpmTpmQuery = rpmTpmQuery.Where("type = ?", LogTypeConsume)
 
 	// 只统计最近60秒的rpm和tpm
 	rpmTpmQuery = rpmTpmQuery.Where("created_at >= ?", time.Now().Add(-60*time.Second).Unix())
 
 	// 执行查询
-	if err := tx.Scan(&stat).Error; err != nil {
+	if err := quotaQuery.Scan(&stat).Error; err != nil {
 		common.SysError("failed to query log stat: " + err.Error())
+		return stat, errors.New("查询统计数据失败")
+	}
+	if err := sumLogTokenStats(tokenQuery, &stat); err != nil {
+		common.SysError("failed to query token stat: " + err.Error())
 		return stat, errors.New("查询统计数据失败")
 	}
 	if err := rpmTpmQuery.Scan(&stat).Error; err != nil {

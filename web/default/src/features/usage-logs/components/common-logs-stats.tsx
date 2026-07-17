@@ -75,10 +75,19 @@ export function CommonLogsStats() {
     placeholderData: (previousData) => previousData,
   })
 
+  const promptTokens = stats?.prompt_tokens ?? 0
+  const cacheTokens = stats?.cache_tokens ?? 0
+  const cacheWriteTokens = stats?.cache_write_tokens ?? 0
+  const completionTokens = stats?.completion_tokens ?? 0
+
   if (isLoading) {
     return (
-      <div className='flex items-center gap-2'>
+      <div className='flex flex-wrap items-center gap-2'>
         <Skeleton className='h-7 w-[150px] rounded-md' />
+        <Skeleton className='h-7 w-[140px] rounded-md' />
+        <Skeleton className='h-7 w-[130px] rounded-md' />
+        <Skeleton className='h-7 w-[130px] rounded-md' />
+        <Skeleton className='h-7 w-[140px] rounded-md' />
         <Skeleton className='h-7 w-[100px] rounded-md' />
         <Skeleton className='h-7 w-[120px] rounded-md' />
       </div>
@@ -91,6 +100,26 @@ export function CommonLogsStats() {
         label={t('Usage')}
         value={sensitiveVisible ? formatLogQuota(stats?.quota || 0) : '••••'}
         accent='bg-sky-500/70'
+      />
+      <StatBadge
+        label={t('Input Tokens')}
+        value={promptTokens.toLocaleString()}
+        accent='bg-emerald-500/70'
+      />
+      <StatBadge
+        label={t('Cache Read')}
+        value={cacheTokens.toLocaleString()}
+        accent='bg-amber-500/70'
+      />
+      <StatBadge
+        label={t('Cache Write')}
+        value={cacheWriteTokens.toLocaleString()}
+        accent='bg-orange-500/70'
+      />
+      <StatBadge
+        label={t('Output Tokens')}
+        value={completionTokens.toLocaleString()}
+        accent='bg-violet-500/70'
       />
       <StatBadge
         label={t('RPM')}

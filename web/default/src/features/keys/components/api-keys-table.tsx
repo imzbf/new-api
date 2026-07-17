@@ -25,8 +25,6 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import {
-  DISABLED_ROW_DESKTOP,
-  DISABLED_ROW_MOBILE,
   DataTablePage,
   useDebouncedColumnFilter,
   useDataTable,
@@ -66,8 +64,23 @@ const API_KEYS_MOBILE_SKELETON_IDS = Array.from(
   (_, index) => `api-key-mobile-skeleton-${index + 1}`
 )
 
-function isDisabledApiKeyRow(apiKey: ApiKey) {
-  return apiKey.status !== API_KEY_STATUS.ENABLED
+// Preserve the status tint through hover and selection; the table's default
+// selected background would otherwise hide the distinction in long key lists.
+const API_KEY_ENABLED_ROW_DESKTOP =
+  '[--api-key-row:color-mix(in_oklch,var(--success)_7%,var(--background))] [--api-key-row-hover:color-mix(in_oklch,var(--success)_11%,var(--background))] [background-color:var(--api-key-row)] hover:[background-color:var(--api-key-row-hover)] data-[state=selected]:![background-color:var(--api-key-row)] data-[state=selected]:hover:![background-color:var(--api-key-row-hover)] [&>td:first-child]:[border-left-color:color-mix(in_oklch,var(--success)_70%,var(--background))] [&>td:first-child]:border-l-4 [&>td:first-child]:pl-1'
+const API_KEY_INACTIVE_ROW_DESKTOP =
+  '[--api-key-row:color-mix(in_oklch,var(--neutral)_14%,var(--background))] [--api-key-row-hover:color-mix(in_oklch,var(--neutral)_20%,var(--background))] [background-color:var(--api-key-row)] hover:[background-color:var(--api-key-row-hover)] data-[state=selected]:![background-color:var(--api-key-row)] data-[state=selected]:hover:![background-color:var(--api-key-row-hover)] [&>td:first-child]:[border-left-color:color-mix(in_oklch,var(--neutral)_65%,var(--background))] [&>td:first-child]:border-l-4 [&>td:first-child]:pl-1'
+const API_KEY_ENABLED_ROW_MOBILE =
+  '[background-color:color-mix(in_oklch,var(--success)_7%,var(--background))] [border-left-color:color-mix(in_oklch,var(--success)_70%,var(--background))] border-l-4 pl-2 transition-colors'
+const API_KEY_INACTIVE_ROW_MOBILE =
+  '[background-color:color-mix(in_oklch,var(--neutral)_14%,var(--background))] [border-left-color:color-mix(in_oklch,var(--neutral)_65%,var(--background))] border-l-4 pl-2 transition-colors'
+
+function getApiKeyStatusRowClassName(apiKey: ApiKey, isMobile: boolean) {
+  const isEnabled = apiKey.status === API_KEY_STATUS.ENABLED
+  if (isMobile) {
+    return isEnabled ? API_KEY_ENABLED_ROW_MOBILE : API_KEY_INACTIVE_ROW_MOBILE
+  }
+  return isEnabled ? API_KEY_ENABLED_ROW_DESKTOP : API_KEY_INACTIVE_ROW_DESKTOP
 }
 
 function ApiKeysMobileSkeleton() {
@@ -136,8 +149,8 @@ function ApiKeysMobileList({
           <div
             key={row.id}
             className={cn(
-              'bg-card space-y-2.5 border-b px-3 py-2.5 last:border-b-0',
-              isDisabledApiKeyRow(apiKey) && DISABLED_ROW_MOBILE
+              'space-y-2.5 border-b px-3 py-2.5 last:border-b-0',
+              getApiKeyStatusRowClassName(apiKey, true)
             )}
           >
             <div className='flex items-start justify-between gap-3'>
@@ -153,6 +166,7 @@ function ApiKeysMobileList({
                 <StatusBadge
                   label={t(statusConfig.label)}
                   variant={statusConfig.variant}
+                  showDot
                   copyable={false}
                 />
               )}
@@ -327,7 +341,7 @@ export function ApiKeysTable() {
       }}
       mobile={<ApiKeysMobileList table={table} isLoading={isLoading} />}
       getRowClassName={(row) =>
-        isDisabledApiKeyRow(row.original) ? DISABLED_ROW_DESKTOP : undefined
+        getApiKeyStatusRowClassName(row.original, false)
       }
       bulkActions={<DataTableBulkActions table={table} />}
     />
