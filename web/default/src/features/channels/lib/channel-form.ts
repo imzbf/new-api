@@ -36,38 +36,6 @@ import {
 // Form Validation Schema
 // ============================================================================
 
-export type ChannelConnectionConfig = {
-  key: string
-  url: string
-}
-
-export const CHANNEL_CONNECTION_CLIPBOARD_TYPE = 'newapi_channel_conn'
-
-export function parseChannelConnectionString(
-  text: string | undefined
-): ChannelConnectionConfig | null {
-  if (!text?.trim()) return null
-
-  try {
-    const parsed: unknown = JSON.parse(text.trim())
-    if (!isJsonObjectValue(parsed)) return null
-
-    // Keep this in sync with the API-key "Copy Connection Info" action so
-    // connection snippets can move between classic and default UI versions.
-    if (
-      parsed._type === CHANNEL_CONNECTION_CLIPBOARD_TYPE &&
-      typeof parsed.key === 'string' &&
-      typeof parsed.url === 'string'
-    ) {
-      return { key: parsed.key, url: parsed.url }
-    }
-  } catch {
-    // Clipboard text is often arbitrary user data; invalid JSON just means no match.
-  }
-
-  return null
-}
-
 function parseOptionalJson(value: string | undefined): unknown {
   if (!value?.trim()) return undefined
   return JSON.parse(value)
