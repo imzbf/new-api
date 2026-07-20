@@ -29,8 +29,6 @@ import { useState, useMemo, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
-  DISABLED_ROW_DESKTOP,
-  DISABLED_ROW_MOBILE,
   DataTablePage,
   useDebouncedColumnFilter,
   useDataTable,
@@ -71,6 +69,20 @@ const CHANNELS_COLUMN_SIZING_STORAGE_KEY = 'channels:column-sizing'
 const CHANNELS_VIEW_MODE_STORAGE_KEY = 'channels:view-mode'
 const CHANNELS_STATUS_FILTER_STORAGE_KEY = 'channel-status-filter'
 
+// Keep channel state visible across table/card layouts, including the stronger
+// dark-theme tint requested for long lists. Pinned action cells receive the
+// same row variables below so they do not visually split away from the row.
+const CHANNEL_ENABLED_ROW_DESKTOP =
+  '[--channel-row:color-mix(in_oklch,var(--success)_7%,var(--background))] [--channel-row-hover:color-mix(in_oklch,var(--success)_11%,var(--background))] dark:[--channel-row:color-mix(in_oklch,var(--success)_18%,var(--background))] dark:[--channel-row-hover:color-mix(in_oklch,var(--success)_25%,var(--background))] [--data-table-card-bg:var(--channel-row)] [background-color:var(--channel-row)] hover:[background-color:var(--channel-row-hover)] data-[state=selected]:![background-color:var(--channel-row)] data-[state=selected]:hover:![background-color:var(--channel-row-hover)] [&>td:first-child]:[border-left-color:color-mix(in_oklch,var(--success)_75%,var(--background))] [&>td:first-child]:border-l-4 [&>td:first-child]:pl-1 data-[slot=data-table-card]:[border-left-color:color-mix(in_oklch,var(--success)_75%,var(--background))] data-[slot=data-table-card]:border-l-4 data-[slot=data-table-card]:pl-2'
+const CHANNEL_INACTIVE_ROW_DESKTOP =
+  '[--channel-row:color-mix(in_oklch,var(--neutral)_14%,var(--background))] [--channel-row-hover:color-mix(in_oklch,var(--neutral)_20%,var(--background))] dark:[--channel-row:color-mix(in_oklch,var(--neutral)_24%,var(--background))] dark:[--channel-row-hover:color-mix(in_oklch,var(--neutral)_31%,var(--background))] [--data-table-card-bg:var(--channel-row)] [background-color:var(--channel-row)] hover:[background-color:var(--channel-row-hover)] data-[state=selected]:![background-color:var(--channel-row)] data-[state=selected]:hover:![background-color:var(--channel-row-hover)] [&>td:first-child]:[border-left-color:color-mix(in_oklch,var(--neutral)_75%,var(--background))] [&>td:first-child]:border-l-4 [&>td:first-child]:pl-1 data-[slot=data-table-card]:[border-left-color:color-mix(in_oklch,var(--neutral)_75%,var(--background))] data-[slot=data-table-card]:border-l-4 data-[slot=data-table-card]:pl-2'
+const CHANNEL_ENABLED_ROW_MOBILE =
+  '[--channel-row:color-mix(in_oklch,var(--success)_7%,var(--background))] dark:[--channel-row:color-mix(in_oklch,var(--success)_18%,var(--background))] [--data-table-card-bg:var(--channel-row)] [background-color:var(--channel-row)] [border-left-color:color-mix(in_oklch,var(--success)_75%,var(--background))] border-l-4 pl-2 transition-colors'
+const CHANNEL_INACTIVE_ROW_MOBILE =
+  '[--channel-row:color-mix(in_oklch,var(--neutral)_14%,var(--background))] dark:[--channel-row:color-mix(in_oklch,var(--neutral)_24%,var(--background))] [--data-table-card-bg:var(--channel-row)] [background-color:var(--channel-row)] [border-left-color:color-mix(in_oklch,var(--neutral)_75%,var(--background))] border-l-4 pl-2 transition-colors'
+const CHANNEL_ACTIONS_COLUMN_CLASS = 'w-[152px] min-w-[152px] max-w-[152px]'
+const CHANNEL_ACTIONS_CELL_CLASS = `${CHANNEL_ACTIONS_COLUMN_CLASS} ![background-color:var(--channel-row,var(--background))] group-hover:![background-color:var(--channel-row-hover,var(--background))] group-data-[state=selected]:![background-color:var(--channel-row,var(--background))]`
+
 const CHANNEL_SORTABLE_COLUMNS = new Set<ChannelSortBy>([
   'id',
   'name',
@@ -80,10 +92,27 @@ const CHANNEL_SORTABLE_COLUMNS = new Set<ChannelSortBy>([
   'test_time',
 ])
 
-function isDisabledChannelRow(channel: Channel) {
-  return (
-    !isTagAggregateRow(channel) && channel.status !== CHANNEL_STATUS.ENABLED
-  )
+function getChannelStatusRowClassName(channel: Channel, isMobile: boolean) {
+  if (isTagAggregateRow(channel)) {
+    return undefined
+  }
+
+  const isEnabled = channel.status === CHANNEL_STATUS.ENABLED
+  if (isMobile) {
+    return isEnabled ? CHANNEL_ENABLED_ROW_MOBILE : CHANNEL_INACTIVE_ROW_MOBILE
+  }
+
+  return isEnabled ? CHANNEL_ENABLED_ROW_DESKTOP : CHANNEL_INACTIVE_ROW_DESKTOP
+}
+
+function getChannelColumnClassName(columnId: string, kind: 'header' | 'cell') {
+  if (columnId !== 'actions') {
+    return undefined
+  }
+
+  return kind === 'header'
+    ? CHANNEL_ACTIONS_COLUMN_CLASS
+    : CHANNEL_ACTIONS_CELL_CLASS
 }
 
 export function ChannelsTable() {
@@ -423,6 +452,7 @@ export function ChannelsTable() {
       )}
       cardGridClassName='grid grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-3'
       applyHeaderSize
+      getColumnClassName={getChannelColumnClassName}
       toolbarProps={{
         searchPlaceholder: t('Filter by name, ID, or key...'),
         searchDebounceMs: 500,
@@ -480,15 +510,9 @@ export function ChannelsTable() {
           </Tooltip>
         ),
       }}
-      getRowClassName={(row, { isMobile }) => {
-        if (!isDisabledChannelRow(row.original)) {
-          return undefined
-        }
-        if (isMobile) {
-          return DISABLED_ROW_MOBILE
-        }
-        return DISABLED_ROW_DESKTOP
-      }}
+      getRowClassName={(row, { isMobile }) =>
+        getChannelStatusRowClassName(row.original, isMobile)
+      }
       bulkActions={batchMode ? <DataTableBulkActions table={table} /> : null}
     />
   )
