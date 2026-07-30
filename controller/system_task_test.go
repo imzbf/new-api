@@ -10,8 +10,6 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
-	"github.com/gin-contrib/sessions"
-	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -19,8 +17,14 @@ import (
 	"gorm.io/gorm"
 )
 
-func setupSystemTaskControllerTestDB(t *testing.T) *gorm.DB {
+func setupSystemTaskControllerTestDB(t *testing.T, role int) string {
 	t.Helper()
+
+	previousDB := model.DB
+	previousLogDB := model.LOG_DB
+	previousMainDatabaseType := common.MainDatabaseType()
+	previousLogDatabaseType := common.LogDatabaseType()
+	previousRedisEnabled := common.RedisEnabled
 
 	gin.SetMode(gin.TestMode)
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
@@ -32,29 +36,32 @@ func setupSystemTaskControllerTestDB(t *testing.T) *gorm.DB {
 	model.DB = db
 	model.LOG_DB = db
 	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Log{}, &model.SystemTask{}, &model.SystemTaskLock{}))
-	require.NoError(t, db.Create(&model.User{Id: 1, Username: "tester", Role: common.RoleRootUser, Status: common.UserStatusEnabled}).Error)
+	accessToken := "system-task-controller-token-001"
+	require.NoError(t, db.Create(&model.User{
+		Id:          1,
+		Username:    "tester",
+		Role:        role,
+		Status:      common.UserStatusEnabled,
+		Group:       "default",
+		AccessToken: &accessToken,
+		AuthVersion: 1,
+	}).Error)
 
 	t.Cleanup(func() {
 		sqlDB, err := db.DB()
 		if err == nil {
 			_ = sqlDB.Close()
 		}
+		model.DB = previousDB
+		model.LOG_DB = previousLogDB
+		common.SetDatabaseTypes(previousMainDatabaseType, previousLogDatabaseType)
+		common.RedisEnabled = previousRedisEnabled
 	})
-	return db
+	return accessToken
 }
 
-func newSystemTaskCleanupRouter(role int) *gin.Engine {
+func newSystemTaskCleanupRouter() *gin.Engine {
 	router := gin.New()
-	router.Use(sessions.Sessions("session", cookie.NewStore([]byte("system-task-test"))))
-	router.Use(func(c *gin.Context) {
-		session := sessions.Default(c)
-		session.Set("username", "tester")
-		session.Set("role", role)
-		session.Set("id", 1)
-		session.Set("status", common.UserStatusEnabled)
-		session.Set("group", "default")
-		c.Next()
-	})
 	group := router.Group("/api/system-task")
 	group.Use(middleware.RootAuth())
 	group.POST("/sensitive-replacement-log-cleanup", CreateSensitiveReplacementLogCleanupSystemTask)
@@ -62,22 +69,23 @@ func newSystemTaskCleanupRouter(role int) *gin.Engine {
 }
 
 func TestCreateSensitiveReplacementLogCleanupSystemTaskRequiresRoot(t *testing.T) {
-	setupSystemTaskControllerTestDB(t)
+	accessToken := setupSystemTaskControllerTestDB(t, common.RoleAdminUser)
 
-	router := newSystemTaskCleanupRouter(common.RoleAdminUser)
+	router := newSystemTaskCleanupRouter()
 	req := httptest.NewRequest(http.MethodPost, "/api/system-task/sensitive-replacement-log-cleanup?target_timestamp=1000", nil)
-	req.Header.Set("New-Api-User", "1")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusForbidden, w.Code)
 	var resp struct {
 		Success bool   `json:"success"`
-		Message string `json:"message"`
+		Code    string `json:"code"`
 	}
 	require.NoError(t, common.Unmarshal(w.Body.Bytes(), &resp))
 	assert.False(t, resp.Success)
+	assert.Equal(t, "AUTH_INSUFFICIENT_PRIVILEGE", resp.Code)
 
 	var count int64
 	require.NoError(t, model.DB.Model(&model.SystemTask{}).
@@ -87,11 +95,11 @@ func TestCreateSensitiveReplacementLogCleanupSystemTaskRequiresRoot(t *testing.T
 }
 
 func TestCreateSensitiveReplacementLogCleanupSystemTaskAsRoot(t *testing.T) {
-	setupSystemTaskControllerTestDB(t)
+	accessToken := setupSystemTaskControllerTestDB(t, common.RoleRootUser)
 
-	router := newSystemTaskCleanupRouter(common.RoleRootUser)
+	router := newSystemTaskCleanupRouter()
 	req := httptest.NewRequest(http.MethodPost, "/api/system-task/sensitive-replacement-log-cleanup?target_timestamp=1000", nil)
-	req.Header.Set("New-Api-User", "1")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
