@@ -80,6 +80,32 @@ export function buildSearchParams(
 }
 
 /**
+ * Build a stable identity for the effective common-log filters. The filter bar
+ * keeps a local draft, so this key distinguishes edited values from the URL
+ * state that has already been queried. Dates are normalized to timestamps so
+ * default and explicitly supplied ranges compare consistently.
+ */
+export function buildCommonLogSearchKey(
+  filters: CommonLogFilters,
+  logType: string
+): string {
+  return [
+    filters.startTime?.getTime(),
+    filters.endTime?.getTime(),
+    filters.channel,
+    filters.model,
+    filters.token,
+    filters.group,
+    filters.username,
+    filters.requestId,
+    filters.upstreamRequestId,
+    logType,
+  ]
+    .map((value) => String(value ?? ''))
+    .join('\u001f')
+}
+
+/**
  * Get log category display name
  */
 export function getLogCategoryLabel(category: LogCategory): string {

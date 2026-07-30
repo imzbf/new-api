@@ -172,6 +172,7 @@ export interface LogOtherData {
   cache_creation_tokens?: number
   cache_creation_tokens_5m?: number
   cache_creation_tokens_1h?: number
+  usage_semantic?: 'openai' | 'anthropic' | 'gemini' | string
   claude?: boolean
   model_ratio?: number
   completion_ratio?: number

@@ -20,7 +20,7 @@ import { useQueryClient, useIsFetching } from '@tanstack/react-query'
 import { useNavigate, getRouteApi } from '@tanstack/react-router'
 import type { Table } from '@tanstack/react-table'
 import { Eye, EyeOff } from 'lucide-react'
-import { useState, useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -37,9 +37,10 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { useDebounce } from '@/hooks/use-debounce'
 
 import { LOG_TYPE_ALL_VALUE, LOG_TYPE_FILTERS } from '../constants'
-import { buildSearchParams } from '../lib/filter'
+import { buildCommonLogSearchKey, buildSearchParams } from '../lib/filter'
 import { getDefaultDayTimeRange } from '../lib/utils'
 import type { CommonLogFilters } from '../types'
 import { CommonLogsStats } from './common-logs-stats'
@@ -77,34 +78,6 @@ function getLogTypeValue(value: unknown): LogTypeValue {
     : LOG_TYPE_ALL_VALUE
 }
 
-function buildSearchSourceKey(values: {
-  startTime?: unknown
-  endTime?: unknown
-  channel?: unknown
-  model?: unknown
-  token?: unknown
-  group?: unknown
-  username?: unknown
-  requestId?: unknown
-  upstreamRequestId?: unknown
-  type?: unknown
-}) {
-  return [
-    values.startTime,
-    values.endTime,
-    values.channel,
-    values.model,
-    values.token,
-    values.group,
-    values.username,
-    values.requestId,
-    values.upstreamRequestId,
-    Array.isArray(values.type) ? values.type.join(',') : values.type,
-  ]
-    .map((value) => String(value ?? ''))
-    .join('\u001f')
-}
-
 interface CommonLogsFilterBarProps<TData> {
   table: Table<TData>
 }
@@ -119,21 +92,10 @@ export function CommonLogsFilterBar<TData>(
   const { isAdminView: isAdmin } = useLogsViewScope()
   const { sensitiveVisible, setSensitiveVisible } = useUsageLogsContext()
   const fetchingLogs = useIsFetching({ queryKey: ['logs'] })
+  const [isComposing, setIsComposing] = useState(false)
 
   const searchState = useMemo<CommonLogDraft>(() => {
     const { start, end } = getDefaultDayTimeRange()
-    const sourceValues = {
-      startTime: searchParams.startTime,
-      endTime: searchParams.endTime,
-      channel: searchParams.channel,
-      model: searchParams.model,
-      token: searchParams.token,
-      group: searchParams.group,
-      username: searchParams.username,
-      requestId: searchParams.requestId,
-      upstreamRequestId: searchParams.upstreamRequestId,
-      type: searchParams.type,
-    }
     const filters: CommonLogFilters = {
       startTime: searchParams.startTime
         ? new Date(searchParams.startTime)
@@ -147,10 +109,11 @@ export function CommonLogsFilterBar<TData>(
       requestId: searchParams.requestId || undefined,
       upstreamRequestId: searchParams.upstreamRequestId || undefined,
     }
+    const logType = getLogTypeValue(searchParams.type)
     return {
-      sourceKey: buildSearchSourceKey(sourceValues),
+      sourceKey: buildCommonLogSearchKey(filters, logType),
       filters,
-      logType: getLogTypeValue(searchParams.type),
+      logType,
     }
   }, [
     searchParams.startTime,
@@ -169,6 +132,8 @@ export function CommonLogsFilterBar<TData>(
     draft.sourceKey === searchState.sourceKey ? draft : searchState
   const filters = activeDraft.filters
   const logType = activeDraft.logType
+  const draftSearchKey = buildCommonLogSearchKey(filters, logType)
+  const debouncedDraftSearchKey = useDebounce(draftSearchKey)
 
   const handleChange = useCallback(
     (field: keyof CommonLogFilters, value: Date | string | undefined) => {
@@ -203,13 +168,8 @@ export function CommonLogsFilterBar<TData>(
   const handleReset = useCallback(() => {
     const { start, end } = getDefaultDayTimeRange()
     const resetFilters: CommonLogFilters = { startTime: start, endTime: end }
-    const resetSearch = {
-      type: [LOG_TYPE_ALL_VALUE],
-      startTime: start.getTime(),
-      endTime: end.getTime(),
-    }
     setDraft({
-      sourceKey: buildSearchSourceKey(resetSearch),
+      sourceKey: buildCommonLogSearchKey(resetFilters, LOG_TYPE_ALL_VALUE),
       filters: resetFilters,
       logType: LOG_TYPE_ALL_VALUE,
     })
@@ -219,7 +179,9 @@ export function CommonLogsFilterBar<TData>(
       params: { section: 'common' },
       search: {
         page: 1,
-        ...resetSearch,
+        type: [LOG_TYPE_ALL_VALUE],
+        startTime: start.getTime(),
+        endTime: end.getTime(),
       },
     })
     queryClient.invalidateQueries({ queryKey: ['logs'] })
@@ -228,10 +190,38 @@ export function CommonLogsFilterBar<TData>(
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
+      if (e.nativeEvent.isComposing) return
       if (e.key === 'Enter') handleApply()
     },
     [handleApply]
   )
+
+  const handleCompositionStart = useCallback(() => {
+    setIsComposing(true)
+  }, [])
+
+  const handleCompositionEnd = useCallback(() => {
+    setIsComposing(false)
+  }, [])
+
+  useEffect(() => {
+    // Debounce URL changes so typing a text filter produces one request after
+    // the user pauses, while select and date-range changes still auto-apply.
+    if (
+      isComposing ||
+      debouncedDraftSearchKey !== draftSearchKey ||
+      draftSearchKey === searchState.sourceKey
+    ) {
+      return
+    }
+    handleApply()
+  }, [
+    debouncedDraftSearchKey,
+    draftSearchKey,
+    handleApply,
+    isComposing,
+    searchState.sourceKey,
+  ])
 
   const hasExpandedFilters =
     !!filters.token ||
@@ -307,6 +297,8 @@ export function CommonLogsFilterBar<TData>(
         placeholder={t('Model Name')}
         value={filters.model || ''}
         onChange={(e) => handleChange('model', e.target.value)}
+        onCompositionStart={handleCompositionStart}
+        onCompositionEnd={handleCompositionEnd}
         onKeyDown={handleKeyDown}
       />
     </LogsFilterField>
@@ -318,6 +310,8 @@ export function CommonLogsFilterBar<TData>(
         type={sensitiveType}
         value={filters.group || ''}
         onChange={(e) => handleChange('group', e.target.value)}
+        onCompositionStart={handleCompositionStart}
+        onCompositionEnd={handleCompositionEnd}
         onKeyDown={handleKeyDown}
       />
     </LogsFilterField>
@@ -366,6 +360,8 @@ export function CommonLogsFilterBar<TData>(
           type={sensitiveType}
           value={filters.token || ''}
           onChange={(e) => handleChange('token', e.target.value)}
+          onCompositionStart={handleCompositionStart}
+          onCompositionEnd={handleCompositionEnd}
           onKeyDown={handleKeyDown}
         />
       </LogsFilterField>
@@ -376,6 +372,8 @@ export function CommonLogsFilterBar<TData>(
             type={sensitiveType}
             value={filters.username || ''}
             onChange={(e) => handleChange('username', e.target.value)}
+            onCompositionStart={handleCompositionStart}
+            onCompositionEnd={handleCompositionEnd}
             onKeyDown={handleKeyDown}
           />
         </LogsFilterField>
@@ -386,6 +384,8 @@ export function CommonLogsFilterBar<TData>(
             placeholder={t('Channel ID')}
             value={filters.channel || ''}
             onChange={(e) => handleChange('channel', e.target.value)}
+            onCompositionStart={handleCompositionStart}
+            onCompositionEnd={handleCompositionEnd}
             onKeyDown={handleKeyDown}
           />
         </LogsFilterField>
@@ -395,6 +395,8 @@ export function CommonLogsFilterBar<TData>(
           placeholder={t('Request ID')}
           value={filters.requestId || ''}
           onChange={(e) => handleChange('requestId', e.target.value)}
+          onCompositionStart={handleCompositionStart}
+          onCompositionEnd={handleCompositionEnd}
           onKeyDown={handleKeyDown}
         />
       </LogsFilterField>
@@ -403,6 +405,8 @@ export function CommonLogsFilterBar<TData>(
           placeholder={t('Upstream Request ID')}
           value={filters.upstreamRequestId || ''}
           onChange={(e) => handleChange('upstreamRequestId', e.target.value)}
+          onCompositionStart={handleCompositionStart}
+          onCompositionEnd={handleCompositionEnd}
           onKeyDown={handleKeyDown}
         />
       </LogsFilterField>

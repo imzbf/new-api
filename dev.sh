@@ -18,7 +18,7 @@ terminate_process_tree() {
     return
   fi
 
-  # go run and npm scripts both spawn child processes that may own the real
+  # go run and Bun scripts both spawn child processes that may own the real
   # listening socket, so cleanup must walk descendants instead of killing only
   # the wrapper process captured by $!.
   while IFS= read -r child_pid; do
@@ -119,12 +119,12 @@ cleanup() {
 }
 
 require_command go
-require_command npm
+require_command bun
 require_command pgrep
 require_command lsof
 
-if [[ ! -d "${ROOT_DIR}/web/node_modules" && ! -d "${ROOT_DIR}/web/default/node_modules" ]]; then
-  echo "Frontend dependencies are missing. Install them before running this script." >&2
+if [[ ! -d "${ROOT_DIR}/web/node_modules" ]]; then
+  echo "Frontend dependencies are missing. Run 'bun install' in web/ before starting development." >&2
   exit 1
 fi
 
@@ -138,10 +138,9 @@ fi
 assert_port_available "${BACKEND_PORT}" "Backend" "BACKEND_PORT"
 assert_port_available "${FRONTEND_PORT}" "Frontend" "FRONTEND_PORT"
 
-# main.go embeds both frontend build folders at compile time. Dev uses the
-# Rsbuild server for the real UI, so ignored placeholder files are enough here.
-ensure_embed_index "${ROOT_DIR}/web/default/dist/index.html"
-ensure_embed_index "${ROOT_DIR}/web/classic/dist/index.html"
+# main.go embeds web/dist at compile time. Dev uses the Rsbuild server for the
+# real UI, so an ignored placeholder file is enough when no production build exists.
+ensure_embed_index "${ROOT_DIR}/web/dist/index.html"
 
 trap cleanup INT TERM EXIT
 
@@ -149,8 +148,8 @@ echo "Starting backend:  http://localhost:${BACKEND_PORT}"
 start_managed_process "${ROOT_DIR}" env PORT="${BACKEND_PORT}" go run main.go &
 backend_pid="$!"
 
-echo "Starting default frontend: http://localhost:${FRONTEND_PORT}"
-start_managed_process "${ROOT_DIR}/web/default" npm run dev -- --host "${FRONTEND_HOST}" --port "${FRONTEND_PORT}" &
+echo "Starting frontend: http://localhost:${FRONTEND_PORT}"
+start_managed_process "${ROOT_DIR}/web" bun run dev -- --host "${FRONTEND_HOST}" --port "${FRONTEND_PORT}" &
 frontend_pid="$!"
 
 echo

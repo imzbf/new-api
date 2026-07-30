@@ -65,6 +65,11 @@ import { cn } from '@/lib/utils'
 
 import type { UsageLog } from '../../data/schema'
 import {
+  calculateBillingCostBreakdown,
+  type BillingCostKind,
+  type BillingCostLine,
+} from '../../lib/billing-cost'
+import {
   parseLogOther,
   getParamOverrideActionLabel,
   parseAuditLine,
@@ -169,6 +174,34 @@ function formatRatio(ratio: number | undefined): string {
   return ratio.toFixed(4)
 }
 
+function BillingCostValue(props: {
+  line: BillingCostLine
+  formatPrice: (usd: number) => string
+}) {
+  const terms = props.line.terms
+    .map(
+      (term) =>
+        `${term.tokens.toLocaleString()} × ${props.formatPrice(term.unitPriceUSD)}/M`
+    )
+    .join(' + ')
+  const formula =
+    props.line.groupRatio === 1
+      ? terms
+      : `(${terms}) × ${formatRatio(props.line.groupRatio)}x`
+
+  return (
+    <span
+      className='flex min-w-0 flex-col gap-0.5'
+      data-billing-cost-kind={props.line.kind}
+    >
+      <span>{props.formatPrice(props.line.costUSD)}</span>
+      <span className='text-muted-foreground text-[10px] leading-relaxed whitespace-normal'>
+        {formula}
+      </span>
+    </span>
+  )
+}
+
 function getUsageBillingPathLabel(
   t: TFunction,
   adminInfo: LogOtherData['admin_info']
@@ -227,7 +260,7 @@ function BillingBreakdown(props: {
   const isTieredExpr = other.billing_mode === 'tiered_expr'
   const tieredSummary = getTieredBillingSummary(other)
 
-  const rows: Array<{ label: string; value: string }> = []
+  const rows: Array<{ label: string; value: React.ReactNode }> = []
   const priceOpts = { digitsLarge: 4, digitsSmall: 6, abbreviate: false }
   const fmtPrice = (usd: number) => formatBillingCurrencyFromUSD(usd, priceOpts)
   const baseInputUSD = other.model_ratio != null ? other.model_ratio * 2.0 : 0
@@ -350,6 +383,22 @@ function BillingBreakdown(props: {
         value: `${fmtPrice(baseInputUSD * other.image_ratio)}/M`,
       })
     }
+  }
+
+  const billingCostLabels: Record<BillingCostKind, string> = {
+    input: t('Input Cost'),
+    output: t('Output Cost'),
+    cache_read: t('Cache Read Cost'),
+    cache_write: t('Cache Write Cost'),
+    cache_write_5m: t('Cache Write (5m) Cost'),
+    cache_write_1h: t('Cache Write (1h) Cost'),
+  }
+  const costLines = calculateBillingCostBreakdown(log, other)
+  for (const line of costLines) {
+    rows.push({
+      label: billingCostLabels[line.kind],
+      value: <BillingCostValue line={line} formatPrice={fmtPrice} />,
+    })
   }
 
   if (other.web_search && other.web_search_call_count) {
