@@ -2039,6 +2039,31 @@ export function ChannelMutateDrawer({
                               </FormItem>
                             )}
                           />
+
+                          <FormField
+                            control={form.control}
+                            name='website'
+                            render={({ field }) => (
+                              <FormItem className='sm:col-span-2'>
+                                <FormLabel>{t('Official Website')}</FormLabel>
+                                <FormControl>
+                                  <Input
+                                    type='url'
+                                    inputMode='url'
+                                    autoComplete='url'
+                                    placeholder={t('https://example.com')}
+                                    {...field}
+                                  />
+                                </FormControl>
+                                <FormDescription>
+                                  {t(
+                                    'Shown in the channel list and opens in a new window.'
+                                  )}
+                                </FormDescription>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
                         </div>
 
                         {!isEditing && (
@@ -4233,9 +4258,7 @@ export function ChannelMutateDrawer({
                                         <SelectValue />
                                       </SelectTrigger>
                                     </FormControl>
-                                    <SelectContent
-                                      alignItemWithTrigger={false}
-                                    >
+                                    <SelectContent alignItemWithTrigger={false}>
                                       <SelectGroup>
                                         <SelectItem value='auto'>
                                           {t('Auto')}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -483,6 +484,20 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 
 	if channel.Type == constant.ChannelTypeNewAPI && strings.TrimSpace(channel.GetBaseURL()) == "" {
 		return fmt.Errorf("New API channel base URL cannot be empty")
+	}
+
+	if channel.Website != nil {
+		website := strings.TrimSpace(*channel.Website)
+		if len(website) > 2048 {
+			return fmt.Errorf("channel website URL is too long")
+		}
+		if website != "" {
+			parsedURL, err := url.Parse(website)
+			if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" {
+				return fmt.Errorf("channel website must be a valid HTTP(S) URL")
+			}
+		}
+		channel.Website = &website
 	}
 
 	// 如果是添加操作，检查 channel 和 key 是否为空
@@ -1105,6 +1120,9 @@ func UpdateChannel(c *gin.Context) {
 	}
 	if !equalStringPtr(channel.BaseURL, originChannel.BaseURL) {
 		changedFields = append(changedFields, "base_url")
+	}
+	if !equalStringPtr(channel.Website, originChannel.Website) {
+		changedFields = append(changedFields, "website")
 	}
 	if channel.Key != "" && channel.Key != originChannel.Key {
 		changedFields = append(changedFields, "key")

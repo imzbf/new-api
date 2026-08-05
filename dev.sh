@@ -3,9 +3,12 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BACKEND_PORT="${BACKEND_PORT:-3000}"
+# Project-specific defaults avoid common framework ports while preserving
+# environment overrides for developers who need fixed local addresses.
+BACKEND_PORT="${BACKEND_PORT:-39091}"
 FRONTEND_HOST="${FRONTEND_HOST:-0.0.0.0}"
-FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+FRONTEND_PORT="${FRONTEND_PORT:-39092}"
+FRONTEND_SERVER_URL="${VITE_REACT_APP_SERVER_URL:-http://localhost:${BACKEND_PORT}}"
 
 backend_pid=""
 frontend_pid=""
@@ -149,7 +152,9 @@ start_managed_process "${ROOT_DIR}" env PORT="${BACKEND_PORT}" go run main.go &
 backend_pid="$!"
 
 echo "Starting frontend: http://localhost:${FRONTEND_PORT}"
-start_managed_process "${ROOT_DIR}/web" bun run dev -- --host "${FRONTEND_HOST}" --port "${FRONTEND_PORT}" &
+# Keep the Rsbuild API proxy aligned with BACKEND_PORT unless the caller
+# explicitly provides a different upstream URL.
+start_managed_process "${ROOT_DIR}/web" env VITE_REACT_APP_SERVER_URL="${FRONTEND_SERVER_URL}" bun run dev -- --host "${FRONTEND_HOST}" --port "${FRONTEND_PORT}" &
 frontend_pid="$!"
 
 echo

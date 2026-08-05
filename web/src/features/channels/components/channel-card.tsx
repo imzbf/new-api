@@ -37,7 +37,8 @@ const SENSITIVE_MASK = '••••'
  * preserved: row selection, provider/multi-key/IO.NET type badge, id,
  * name/remark + warning icons, status (with tooltips), groups, inline
  * priority/weight spinners, balance refresh, response/test times, tag
- * expand-collapse, and the per-row (or per-tag) actions menu.
+ * expand-collapse, official website links, and the per-row (or per-tag)
+ * actions menu.
  */
 function ChannelCardComponent({
   row,
@@ -70,6 +71,7 @@ function ChannelCardComponent({
   const selectCell = renderCell('select')
   const typeCell = renderCell('type')
   const nameCell = renderCell('name')
+  const websiteCell = renderCell('website')
   const statusCell = renderCell('status')
   const actionsCell = renderCell('actions')
   const priorityCell = renderCell('priority')
@@ -120,6 +122,9 @@ function ChannelCardComponent({
                 </div>
               )}
               {nameCell}
+              {!isTagRow && row.original.website?.trim() && (
+                <div className='mt-1 max-w-full text-xs'>{websiteCell}</div>
+              )}
             </div>
             <div className='min-w-0'>
               <div className={cn('mb-1', labelClass)}>

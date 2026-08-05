@@ -78,6 +78,7 @@ import {
 import { parseUpstreamUpdateMeta } from '../lib/upstream-update-utils'
 import type { Channel } from '../types'
 import { ChannelRowActionsLayoutContext } from './channel-row-actions-context'
+import { ChannelWebsiteLink } from './channel-website-link'
 import { useChannels } from './channels-provider'
 import { DataTableRowActions } from './data-table-row-actions'
 import { DataTableTagRowActions } from './data-table-tag-row-actions'
@@ -718,6 +719,27 @@ export function useChannelsColumns(
         },
         size: 260,
         minSize: 200,
+      },
+
+      // Official website column
+      {
+        accessorKey: 'website',
+        header: t('Official Website'),
+        cell: ({ row }) => {
+          if (isTagAggregateRow(row.original)) {
+            return null
+          }
+
+          return (
+            <ChannelWebsiteLink
+              channelName={row.original.name}
+              website={row.original.website}
+            />
+          )
+        },
+        size: 220,
+        minSize: 160,
+        enableSorting: false,
       },
 
       // Type column

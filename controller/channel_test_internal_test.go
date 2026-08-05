@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -81,6 +82,47 @@ func TestValidateChannelRequiresNewAPIBaseURL(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
+		})
+	}
+}
+
+func TestValidateChannelWebsite(t *testing.T) {
+	tooLongWebsite := "https://example.com/" + strings.Repeat("a", 2049)
+	tests := []struct {
+		name        string
+		website     *string
+		wantWebsite string
+		wantErr     bool
+	}{
+		{name: "missing"},
+		{name: "blank", website: common.GetPointer("  ")},
+		{name: "http", website: common.GetPointer("http://example.com"), wantWebsite: "http://example.com"},
+		{name: "https is trimmed", website: common.GetPointer("  https://example.com/docs  "), wantWebsite: "https://example.com/docs"},
+		{name: "unsupported scheme", website: common.GetPointer("javascript:alert(1)"), wantErr: true},
+		{name: "missing host", website: common.GetPointer("https:///docs"), wantErr: true},
+		{name: "too long", website: &tooLongWebsite, wantErr: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			channel := &model.Channel{
+				Type:    constant.ChannelTypeOpenAI,
+				Website: test.website,
+			}
+
+			err := validateChannel(channel, false)
+
+			if test.wantErr {
+				require.ErrorContains(t, err, "channel website")
+				return
+			}
+			require.NoError(t, err)
+			if test.website == nil {
+				assert.Nil(t, channel.Website)
+				return
+			}
+			require.NotNil(t, channel.Website)
+			assert.Equal(t, test.wantWebsite, *channel.Website)
 		})
 	}
 }
