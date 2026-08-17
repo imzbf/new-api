@@ -72,6 +72,8 @@ function ChannelCardComponent({
   const typeCell = renderCell('type')
   const nameCell = renderCell('name')
   const websiteCell = renderCell('website')
+  const websiteURL =
+    row.original.website?.trim() || row.original.base_url?.trim()
   const statusCell = renderCell('status')
   const actionsCell = renderCell('actions')
   const priorityCell = renderCell('priority')
@@ -122,9 +124,9 @@ function ChannelCardComponent({
                 </div>
               )}
               {nameCell}
-              {!isTagRow && row.original.website?.trim() && (
+              {!isTagRow && websiteURL ? (
                 <div className='mt-1 max-w-full text-xs'>{websiteCell}</div>
-              )}
+              ) : null}
             </div>
             <div className='min-w-0'>
               <div className={cn('mb-1', labelClass)}>

@@ -22,15 +22,18 @@ import { useTranslation } from 'react-i18next'
 type ChannelWebsiteLinkProps = {
   channelName: string
   website: string | null | undefined
+  apiAddress?: string | null
 }
 
 export function ChannelWebsiteLink(props: ChannelWebsiteLinkProps) {
   const { t } = useTranslation()
-  const website = props.website?.trim()
+  // Keep the fallback derived from the current API address so channels without
+  // an explicitly maintained website never retain a stale copied URL.
+  const website = props.website?.trim() || props.apiAddress?.trim()
   if (!website) return null
 
-  // The API validates this field too, but keep the rendered link inert if
-  // legacy or manually edited database content contains an unsafe protocol.
+  // Explicit websites are API-validated, but keep both explicit and fallback
+  // values inert if legacy or manually edited data uses an unsafe protocol.
   try {
     const parsedURL = new URL(website)
     if (parsedURL.protocol !== 'http:' && parsedURL.protocol !== 'https:') {

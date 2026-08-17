@@ -68,7 +68,7 @@ const reactTestGlobals = globalThis as typeof globalThis & {
 }
 reactTestGlobals.IS_REACT_ACT_ENVIRONMENT = true
 
-async function renderWebsiteLink(website: string) {
+async function renderWebsiteLink(website: string, apiAddress?: string) {
   const container = document.createElement('div')
   document.body.append(container)
   const root = createRoot(container)
@@ -76,7 +76,11 @@ async function renderWebsiteLink(website: string) {
   await act(async () => {
     root.render(
       <I18nextProvider i18n={i18n}>
-        <ChannelWebsiteLink channelName='Example' website={website} />
+        <ChannelWebsiteLink
+          channelName='Example'
+          website={website}
+          apiAddress={apiAddress}
+        />
       </I18nextProvider>
     )
   })
@@ -89,8 +93,11 @@ describe('channel website link', () => {
     domWindow.close()
   })
 
-  test('opens a valid website in an isolated new window', async () => {
-    const rendered = await renderWebsiteLink('https://example.com/docs')
+  test('prefers an explicit website and opens it in an isolated new window', async () => {
+    const rendered = await renderWebsiteLink(
+      'https://example.com/docs',
+      'https://api.example.com/v1'
+    )
     const link = rendered.container.querySelector('a')
 
     assert.ok(link)
@@ -101,6 +108,21 @@ describe('channel website link', () => {
       link.getAttribute('aria-label'),
       'Open Example official website'
     )
+
+    await act(async () => rendered.root.unmount())
+    rendered.container.remove()
+  })
+
+  test('uses the API address when no official website is configured', async () => {
+    const rendered = await renderWebsiteLink(
+      '   ',
+      '  https://api.example.com/v1  '
+    )
+    const link = rendered.container.querySelector('a')
+
+    assert.ok(link)
+    assert.equal(link.getAttribute('href'), 'https://api.example.com/v1')
+    assert.equal(link.textContent, 'https://api.example.com/v1')
 
     await act(async () => rendered.root.unmount())
     rendered.container.remove()

@@ -734,6 +734,7 @@ export function useChannelsColumns(
             <ChannelWebsiteLink
               channelName={row.original.name}
               website={row.original.website}
+              apiAddress={row.original.base_url}
             />
           )
         },
